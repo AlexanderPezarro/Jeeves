@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Plain HTTP is allowed so the app can reach the server over Tailscale (100.x addresses),
+     where the tunnel itself is encrypted. Prefer an https:// URL when you have one. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

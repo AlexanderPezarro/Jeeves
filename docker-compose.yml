@@ -1,0 +1,38 @@
+# Jeeves: control server + to-do plugin.
+# Put your settings in server/jeeves.yaml, plugins/todo/chores.yaml and .env (see the *.example files).
+services:
+  server:
+    build: ./server
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: Europe/London
+      JEEVES_CONFIG: /config/jeeves.yaml
+      JEEVES_DB_PATH: /data/jeeves.db
+    volumes:
+      - ./server/jeeves.yaml:/config/jeeves.yaml:ro
+      - jeeves-data:/data
+      # Uncomment to enable push, and set FIREBASE_SERVICE_ACCOUNT=/config/firebase.json in .env
+      # - ./firebase.json:/config/firebase.json:ro
+    ports:
+      # Put this behind your Cloudflare tunnel or Tailscale; only the app needs to reach it.
+      - "8080:8080"
+    depends_on:
+      - todo
+
+  todo:
+    build: ./plugins/todo
+    restart: unless-stopped
+    environment:
+      TZ: Europe/London
+      TODO_PLUGIN_TOKEN: ${TODO_PLUGIN_TOKEN}
+      TODO_DB_PATH: /data/todo.db
+      TODO_CHORES_FILE: /config/chores.yaml
+    volumes:
+      - ./plugins/todo/chores.yaml:/config/chores.yaml:ro
+      - todo-data:/data
+    # Not published: only the server talks to the plugin, over the compose network.
+
+volumes:
+  jeeves-data:
+  todo-data:

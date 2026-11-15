@@ -1,0 +1,63 @@
+# Copy to chores.yaml and edit. Chores are matched by id, so renaming an id creates a new chore.
+#
+# recurrence:
+#   { every: day }
+#   { every: week, on: [mon, thu] }
+#   { every: month, day: 1 }
+#   { every: days, interval: 3, start: 2026-11-01 }
+# effort: 1 (trivial) to 5 (hard). The planner puts the easiest first.
+# completion_mode: reply (tap Done), timer (follow-up nudges), sensor (smart plug, later).
+
+chores:
+  - id: dishes
+    name: Wash the dishes
+    recurrence: { every: day }
+    effort: 1
+    est_minutes: 10
+    how_to:
+      - Clear the sink and stack plates by size
+      - Hot soapy water, glasses first, pans last
+      - Leave pans to drain, wipe the counter
+
+  - id: laundry
+    name: Do a load of laundry
+    recurrence: { every: week, on: [wed, sun] }
+    effort: 2
+    est_minutes: 15
+    completion_mode: timer
+    how_to:
+      - Sort darks and lights, check pockets
+      - 40 degree cycle, one pod in the drum
+      - Tap Start so Jeeves can nudge you when it's done
+    timer_steps:
+      - { after_minutes: 75, message: "Wash is done: move it to the dryer or hang it up" }
+      - { after_minutes: 60, message: "Dryer is done: fold and put it away while it's warm" }
+
+  - id: bins
+    name: Take the bins out
+    recurrence: { every: week, on: [mon] }
+    effort: 1
+    est_minutes: 5
+    how_to:
+      - Tie the kitchen bag and recycling
+      - Wheel the bin to the kerb
+
+  - id: hoover
+    name: Hoover the flat
+    recurrence: { every: week, on: [sat] }
+    effort: 3
+    est_minutes: 25
+    how_to:
+      - Pick things up off the floor first
+      - Bedroom, then living room, then hallway
+      - Empty the hoover when you finish
+
+  - id: run
+    name: Go for a run
+    recurrence: { every: week, on: [tue, thu, sat] }
+    effort: 4
+    est_minutes: 40
+    goal: Run 3 times a week
+    how_to:
+      - Kit on before you think about it
+      - Easy 5k, conversational pace
