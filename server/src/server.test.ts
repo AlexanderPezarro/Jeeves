@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type Anthropic from "@anthropic-ai/sdk";
 import { Agent, type CreateMessage } from "./agent.js";
+import type { CliRunInput, CliRunner } from "./cli.js";
 import { buildApp } from "./app.js";
 import { configSchema, type Config } from "./config.js";
 import { Db } from "./db.js";
@@ -246,5 +247,71 @@ describe("auth", () => {
     const s = setup();
     expect((await s.app.inject({ method: "POST", url: "/pair", payload: { code: "nope", name: "x" } })).statusCode).toBe(403);
     expect((await s.app.inject({ method: "GET", url: "/today" })).statusCode).toBe(401);
+  });
+});
+
+describe("Claude Code CLI backend", () => {
+  /** Scripted CLI: runs the given steps against Jeeves's tools, then returns the result. */
+  function cliSetup(steps: (input: CliRunInput) => Promise<{ finalText?: string; error?: string }>) {
+    const clock = { now: new Date("2026-11-14T18:20:00Z") };
+    const now = () => clock.now;
+    const db = new Db();
+    const plugins = new FakeTodo(clock);
+    const notifier = new RecordingNotifier();
+    const inputs: CliRunInput[] = [];
+    const cli: CliRunner = async (input) => {
+      inputs.push(input);
+      const out = await steps(input);
+      return { transcript: [], inputTokens: 120, outputTokens: 30, finalText: out.finalText ?? "", ...(out.error ? { error: out.error } : {}) };
+    };
+    const agent = new Agent({ db, config, plugins, notifier, cli, now });
+    const engine = new Engine(db, config, plugins, agent, now);
+    return { db, plugins, notifier, engine, inputs };
+  }
+
+  it("plans through the CLI with the same tools and records the run", async () => {
+    const s = cliSetup(async (input) => {
+      await input.callTool("todo__list_due_tasks", {});
+      await input.callTool("send_message", {
+        text: "Two quick ones tonight.",
+        items: [{ task_id: 1, title: "Wash the dishes", steps: ["Hot water"], minutes: 10 }],
+      });
+      return { finalText: "Sent." };
+    });
+    s.engine.handleEvent("manual.plan", {}, null);
+    await s.engine.idle();
+
+    const input = s.inputs[0];
+    expect(input).toMatchObject({ model: "claude-opus-5-5", effort: "low" });
+    expect(input.tools.map((t) => t.name)).toEqual(expect.arrayContaining(["todo__list_due_tasks", "send_message"]));
+    expect(input.prompt).toContain("sat 2026-11-14, 18:20");
+    expect(s.plugins.calls.map((c) => c.tool)).toContain("list_due_tasks");
+    // The final text is not sent again when send_message was already used.
+    expect(s.notifier.sent.map((m) => m.text)).toEqual(["Two quick ones tonight."]);
+    expect(s.db.recentRuns()[0]).toMatchObject({ status: "ok", input_tokens: 120, output_tokens: 30 });
+  });
+
+  it("sends the final text when Claude answers without send_message", async () => {
+    const s = cliSetup(async () => ({ finalText: "Nothing due tonight, enjoy." }));
+    s.engine.handleUserMessage("anything to do?");
+    await s.engine.idle();
+    expect(s.notifier.sent.map((m) => m.text)).toEqual(["Nothing due tonight, enjoy."]);
+  });
+
+  it("records a CLI error without messaging the phone", async () => {
+    const s = cliSetup(async () => ({ finalText: "partial", error: "error_max_turns" }));
+    s.engine.handleEvent("manual.plan", {}, null);
+    await s.engine.idle();
+    expect(s.notifier.sent).toHaveLength(0);
+    expect(s.db.recentRuns()[0]).toMatchObject({ status: "error", error: "error_max_turns" });
+  });
+
+  it("records a run that throws as an error", async () => {
+    const s = cliSetup(async () => {
+      throw new Error("CLI not logged in");
+    });
+    s.engine.handleEvent("manual.plan", {}, null);
+    await s.engine.idle();
+    expect(s.db.recentRuns()[0]).toMatchObject({ status: "error", error: "CLI not logged in" });
   });
 });

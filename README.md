@@ -81,7 +81,7 @@ of minutes after a trigger. Firebase push (instant delivery) is wired into the s
 ## Development
 
 ```bash
-cd server && npm install && npm test          # 10 tests, Claude is scripted
+cd server && npm install && npm test          # 14 tests, Claude (API and CLI) is scripted
 cd plugins/todo && npm install && npm test    # 6 tests, including a real MCP round trip
 ```
 

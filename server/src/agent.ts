@@ -4,6 +4,7 @@ import type { Db, PlanItem } from "./db.js";
 import type { Notifier } from "./notify.js";
 import { splitToolName, type PluginHost } from "./plugins.js";
 import { localTime } from "./time.js";
+import type { CliRunner } from "./cli.js";
 
 type CreateParams = Anthropic.Beta.Messages.MessageCreateParamsNonStreaming;
 type Message = Anthropic.Beta.Messages.BetaMessage;
@@ -20,7 +21,10 @@ export interface AgentDeps {
   config: Config;
   plugins: PluginHost;
   notifier: Notifier;
-  create: CreateMessage;
+  /** API path. Ignored when `cli` is set. */
+  create?: CreateMessage;
+  /** Claude Code CLI path: uses the CLI's logged-in account instead of an API key. */
+  cli?: CliRunner;
   now?: () => Date;
 }
 
@@ -163,6 +167,9 @@ export class Agent {
       local_date: local.date,
     });
 
+    if (this.deps.cli) return this.runCli(req, runId, userText, tools);
+    if (!create) throw new Error("Agent has neither an API client nor a CLI runner");
+
     const messages: Anthropic.Beta.Messages.BetaMessageParam[] = [{ role: "user", content: userText }];
     let inputTokens = 0;
     let outputTokens = 0;
@@ -230,6 +237,53 @@ export class Agent {
       });
       throw e;
     }
+  }
+
+  private async runCli(
+    req: RunRequest,
+    runId: number,
+    userText: string,
+    tools: Anthropic.Beta.Messages.BetaTool[],
+  ): Promise<RunResult> {
+    const { db, config } = this.deps;
+    let sent = 0;
+    let out;
+    try {
+      out = await this.deps.cli!({
+        model: config.model,
+        effort: config.effort as "low",
+        system: systemPrompt(config, req.kind),
+        prompt: userText,
+        maxTurns: MAX_TURNS,
+        tools: tools.map((t) => ({
+          name: t.name,
+          description: t.description ?? "",
+          input_schema: t.input_schema as Record<string, unknown>,
+        })),
+        callTool: async (name, input) => {
+          const res = await this.callTool(name, input, runId);
+          if (name === "send_message" && !res.isError) sent++;
+          return res;
+        },
+      });
+    } catch (e) {
+      db.finishRun(runId, { status: "error", transcript: [], input_tokens: 0, output_tokens: 0, error: (e as Error).message });
+      throw e;
+    }
+    if (sent === 0 && out.finalText && !out.error) {
+      await this.sendMessage(out.finalText, [], runId);
+      sent++;
+    }
+    const status = out.error ? "error" : "ok";
+    db.finishRun(runId, {
+      status,
+      transcript: out.transcript,
+      input_tokens: out.inputTokens,
+      output_tokens: out.outputTokens,
+      ...(out.error ? { error: out.error } : {}),
+    });
+    if (out.error) console.warn(`Claude CLI run ${runId} failed: ${out.error}`);
+    return { runId, status, messagesSent: sent };
   }
 
   private async callTool(name: string, input: Record<string, unknown>, runId: number) {

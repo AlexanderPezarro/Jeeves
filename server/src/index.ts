@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { Agent, anthropicCreate } from "./agent.js";
+import { claudeCliRun } from "./cli.js";
 import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { Db } from "./db.js";
@@ -19,7 +20,7 @@ async function main() {
 
   const plugins = new McpPluginHost(config.plugins);
   const notifier = makeNotifier(db);
-  const agent = new Agent({ db, config, plugins, notifier, create: anthropicCreate() });
+  const agent = new Agent({ db, config, plugins, notifier, ...(process.env.JEEVES_CLAUDE_BACKEND === "api" ? { create: anthropicCreate() } : { cli: claudeCliRun }) });
   const engine = new Engine(db, config, plugins, agent);
   engine.start();
 
