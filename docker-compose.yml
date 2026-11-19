@@ -2,7 +2,10 @@
 # Put your settings in config/ (copy config.example/), plugins/todo/chores.yaml and .env (see the *.example files).
 services:
   server:
-    build: ./server
+    # Built from the repo root so the image also contains the web UI (web/ -> /admin).
+    build:
+      context: .
+      dockerfile: server/Dockerfile
     restart: unless-stopped
     env_file: .env
     environment:
@@ -13,6 +16,10 @@ services:
       JEEVES_DB_PATH: /data/jeeves.db
       # "cli" (default) drives Claude through the Claude Code CLI login mounted below; "api" uses ANTHROPIC_API_KEY.
       JEEVES_CLAUDE_BACKEND: ${JEEVES_CLAUDE_BACKEND:-cli}
+      # Web UI auth: trust Authelia's Remote-User on /admin/api, but only from Caddy's address
+      # (set JEEVES_TRUSTED_PROXY in .env). Off unless both are set.
+      JEEVES_TRUST_PROXY_AUTH: ${JEEVES_TRUST_PROXY_AUTH:-0}
+      JEEVES_TRUSTED_PROXY: ${JEEVES_TRUSTED_PROXY:-}
     volumes:
       - ./config:/config
       - jeeves-data:/data
@@ -21,7 +28,8 @@ services:
       # Uncomment to enable push, and set FIREBASE_SERVICE_ACCOUNT=/secrets/firebase.json in .env
       # - ./firebase.json:/secrets/firebase.json:ro
     ports:
-      # Put this behind your Cloudflare tunnel or Tailscale; only the app needs to reach it.
+      # Caddy reaches the server over proxy_network, so set JEEVES_BIND=127.0.0.1 in .env to keep
+      # this port off the LAN (recommended once the web UI is on, see docs/deploy.md).
       - "${JEEVES_BIND:-0.0.0.0}:${JEEVES_PORT:-8080}:8080"
     depends_on:
       - todo

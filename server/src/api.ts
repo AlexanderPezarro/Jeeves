@@ -88,6 +88,19 @@ export function registerConfigRoutes(app: FastifyInstance, { db, store }: ApiDep
   });
 
   app.get("/config/errors", async () => ({ errors: store.errors }));
+
+  /** Settings form: the globals in jeeves.yaml (plugins have their own routes). */
+  app.get("/config/globals", async () => store.readGlobals());
+
+  app.put("/config/globals", async (req, reply) => {
+    const body = z.object({ patch: z.record(z.string(), z.unknown()), hash: hashField }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "validation", message: "send {patch, hash}", issues: [] });
+    try {
+      return store.writeGlobals(body.data.patch, body.data.hash);
+    } catch (e) {
+      return sendWriteError(reply, e);
+    }
+  });
 }
 
 /** Built-in event types the trigger picker always offers. */
@@ -124,7 +137,7 @@ export function registerObservabilityRoutes(
     const body = z
       .object({ event_type: z.string().regex(/^[a-z0-9_.-]+$/), payload: z.record(z.string(), z.unknown()).default({}), at: z.string().datetime({ offset: true }).optional() })
       .safeParse(req.body);
-    if (!body.success) return reply.code(400).send({ error: "validation", issues: formatIssues(body.error) });
+    if (!body.success) return reply.code(400).send({ error: "validation", message: "invalid request", issues: formatIssues(body.error) });
     const at = body.data.at ? new Date(body.data.at) : now();
     return { at: at.toISOString(), decisions: engine.simulate(body.data.event_type, body.data.payload, at) };
   });
@@ -132,7 +145,7 @@ export function registerObservabilityRoutes(
   app.post("/workflows/:id/run", async (req, reply) => {
     const { id } = req.params as { id: string };
     const body = z.object({ dry_run: z.boolean().default(false), payload: z.record(z.string(), z.unknown()).default({}) }).safeParse(req.body ?? {});
-    if (!body.success) return reply.code(400).send({ error: "validation", issues: formatIssues(body.error) });
+    if (!body.success) return reply.code(400).send({ error: "validation", message: "invalid request", issues: formatIssues(body.error) });
     let run;
     try {
       run = engine.runNow(id, { dryRun: body.data.dry_run, payload: body.data.payload });

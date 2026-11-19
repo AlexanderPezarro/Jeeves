@@ -129,10 +129,10 @@ export function setup(opts: SetupOptions = {}) {
   let config: ConfigSource;
   let store: ConfigStore | undefined;
   if (opts.store) {
-    store = new ConfigStore(tmpConfigDir(opts.globals, workflows), now);
+    store = new ConfigStore(tmpConfigDir({ todo_plugin: "todo", ...opts.globals }, workflows), now);
     config = store;
   } else {
-    config = staticConfig({ timezone: "Europe/London", ...opts.globals }, workflows);
+    config = staticConfig({ timezone: "Europe/London", todo_plugin: "todo", ...opts.globals }, workflows);
   }
   const fake = new FakeTodo(clock);
   const plugins = opts.plugins ?? fake;

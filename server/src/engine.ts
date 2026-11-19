@@ -129,9 +129,13 @@ export class Engine {
     return msg;
   }
 
-  /** Which plugin serves the Today list and task buttons. Overridden by the plugin host's manifest in phase 4. */
+  /**
+   * Which plugin serves the Today list and task buttons: the first whose manifest says
+   * `today: true`, else the deprecated `todo_plugin` setting. None means 404 "no Today plugin".
+   */
   todayPlugin(): string | null {
-    return this.config.current.todo_plugin ?? "todo";
+    const fromManifest = (this.plugins as { todayPlugin?: () => string | null }).todayPlugin?.() ?? null;
+    return fromManifest ?? this.config.current.todo_plugin ?? null;
   }
 
   /** A notification button or a tap in the Today list. */

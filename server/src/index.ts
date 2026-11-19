@@ -9,6 +9,7 @@ import { Engine } from "./engine.js";
 import { migrateRules } from "./migrate.js";
 import { makeNotifier } from "./notify.js";
 import { McpPluginHost } from "./plugins.js";
+import { proxyAuthFromEnv } from "./auth.js";
 import { recordConfigActivity } from "./timeline.js";
 
 function configDir(): string {
@@ -44,6 +45,20 @@ async function main() {
   const plugins = new McpPluginHost(store.current.plugins, {
     onStatusChange: (name, reachable, status) =>
       db.addActivity(reachable ? "plugin_connect" : "plugin_disconnect", name, { error: status.last_error, tool_count: status.tool_count }),
+    settingsFor: (name) => store.current.plugin_settings[name],
+    onManifest: (name, manifest) => {
+      // todo_plugin is superseded by a manifest with today: true; drop the key once one is found.
+      if (manifest?.today && store.current.todo_plugin !== undefined) {
+        try {
+          store.editGlobals(undefined, (doc) => {
+            doc.deleteIn(["todo_plugin"]);
+          });
+          console.log(`Removed todo_plugin from jeeves.yaml: ${name} serves the Today list (manifest today: true)`);
+        } catch (e) {
+          console.warn(`Could not remove todo_plugin: ${(e as Error).message}`);
+        }
+      }
+    },
   });
   store.on("reload", (diff) => {
     console.log("Config reloaded", JSON.stringify(diff));
@@ -62,10 +77,20 @@ async function main() {
   const engine = new Engine(db, store, plugins, agent);
   engine.start();
 
-  const app = buildApp({ db, engine, pairingCode, store, plugins });
+  const proxyAuth = proxyAuthFromEnv();
+  if (proxyAuth.trust) console.log(`Trusting Remote-User on /admin/api from ${proxyAuth.trustedProxies.join(", ") || "(nobody: set JEEVES_TRUSTED_PROXY)"}`);
+  const webDir = resolve(process.env.JEEVES_WEB_DIR ?? "web");
+  const app = buildApp({ db, engine, pairingCode, store, plugins, proxyAuth, webDir });
   await app.listen({ host: "0.0.0.0", port: Number(process.env.PORT ?? 8080) });
 
+  // Contact plugins now and every 5 minutes: keeps status fresh, fetches manifests and
+  // re-pushes settings whenever a plugin comes (back) up.
+  const probe = () => void plugins.listTools().catch((e) => console.warn("Plugin probe failed", e));
+  probe();
+  const probeTimer = setInterval(probe, 5 * 60_000);
+
   const shutdown = async () => {
+    clearInterval(probeTimer);
     store.close();
     await app.close();
     await engine.stop();
