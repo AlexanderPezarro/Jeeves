@@ -38,7 +38,11 @@ services:
       TODO_PLUGIN_TOKEN: ${TODO_PLUGIN_TOKEN}
       TODO_DB_PATH: /data/todo.db
       TODO_CHORES_FILE: /config/chores.yaml
+      # Task events (todo.task_started / todo.task_completed) go to <JEEVES_URL>/plugin-events.
+      JEEVES_URL: http://server:8080
     volumes:
+      # Seed/import only: new ids are added on start and by "Import from chores.yaml" on the Chores page.
+      # Chores already in todo.db are never overwritten from this file; edit them in the Chores page.
       - ./plugins/todo/chores.yaml:/config/chores.yaml:ro
       - todo-data:/data
     # Not published: only the server talks to the plugin, over the compose network.

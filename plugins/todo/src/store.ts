@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { isDue, type Recurrence } from "./recurrence.js";
+import { DEFAULT_SETTINGS, settingsSchema, type Settings } from "./settings.js";
 
 export interface TimerStep {
   /** Minutes after the previous step (or after the task was started). */
@@ -68,18 +69,92 @@ CREATE TABLE IF NOT EXISTS task_instances (
   snoozed_until TEXT,
   UNIQUE (chore_id, due_date)
 );
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+-- Ids of chores deleted in the UI, so the chores.yaml seed does not bring them back on restart.
+CREATE TABLE IF NOT EXISTS deleted_chores (
+  id TEXT PRIMARY KEY
+);
 `;
 
-/** How many days an unfinished task keeps rolling forward before it is dropped. */
-const CARRY_OVER_DAYS = 3;
+export class ChoreExistsError extends Error {}
 
 export class TodoStore {
   readonly db: Database.Database;
+  private cachedSettings: Settings;
 
   constructor(path = ":memory:") {
     this.db = new Database(path);
     this.db.pragma("journal_mode = WAL");
     this.db.exec(SCHEMA);
+    this.cachedSettings = this.loadSettings();
+  }
+
+  /** Current settings with defaults filled in. */
+  settings(): Settings {
+    return { ...this.cachedSettings };
+  }
+
+  /**
+   * Replace all settings (missing keys fall back to defaults) and apply them immediately.
+   * Throws a ZodError on unknown keys or bad values.
+   */
+  setSettings(values: unknown): Settings {
+    const parsed = settingsSchema.parse(values ?? {});
+    const insert = this.db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)");
+    this.db.transaction(() => {
+      this.db.prepare("DELETE FROM settings").run();
+      for (const [k, v] of Object.entries(parsed)) insert.run(k, JSON.stringify(v));
+    })();
+    this.cachedSettings = parsed;
+    return this.settings();
+  }
+
+  private loadSettings(): Settings {
+    const rows = this.db.prepare("SELECT key, value FROM settings").all() as { key: string; value: string }[];
+    const raw: Record<string, unknown> = {};
+    for (const r of rows) raw[r.key] = JSON.parse(r.value);
+    const parsed = settingsSchema.safeParse(raw);
+    return parsed.success ? parsed.data : { ...DEFAULT_SETTINGS };
+  }
+
+  /** Insert a new chore. Throws ChoreExistsError if the id is taken. Clears any delete tombstone. */
+  createChore(c: Chore): Chore {
+    if (this.getChore(c.id)) throw new ChoreExistsError(`A chore with id ${c.id} already exists`);
+    this.db.transaction(() => {
+      this.db.prepare("DELETE FROM deleted_chores WHERE id = ?").run(c.id);
+      this.upsertChore(c);
+    })();
+    return this.getChore(c.id)!;
+  }
+
+  /** Replace an existing chore's fields. Returns undefined if there is no such chore. */
+  updateChore(c: Chore): Chore | undefined {
+    if (!this.getChore(c.id)) return undefined;
+    this.upsertChore(c);
+    return this.getChore(c.id)!;
+  }
+
+  /**
+   * Delete a chore together with its task history, and remember the id so the chores.yaml seed does
+   * not re-create it on the next start. To keep the history, set the chore inactive instead.
+   * Returns false if there is no such chore.
+   */
+  deleteChore(id: string): boolean {
+    if (!this.getChore(id)) return false;
+    this.db.transaction(() => {
+      this.db.prepare("DELETE FROM task_instances WHERE chore_id = ?").run(id);
+      this.db.prepare("DELETE FROM chores WHERE id = ?").run(id);
+      this.db.prepare("INSERT OR IGNORE INTO deleted_chores (id) VALUES (?)").run(id);
+    })();
+    return true;
+  }
+
+  /** True if the id belongs to a chore in the DB or one deleted in the UI. Used by the seed. */
+  knowsChore(id: string): boolean {
+    return !!this.getChore(id) || !!this.db.prepare("SELECT 1 FROM deleted_chores WHERE id = ?").get(id);
   }
 
   upsertChore(c: Chore): void {
@@ -133,7 +208,7 @@ export class TodoStore {
            AND (t.state IN ('pending', 'started') OR (t.due_date = ? AND t.state IN ('done', 'skipped')))
          ORDER BY CASE WHEN t.state IN ('done', 'skipped') THEN 1 ELSE 0 END, c.effort, c.est_minutes, c.name`,
       )
-      .all(date, date, date, CARRY_OVER_DAYS, date) as Record<string, unknown>[];
+      .all(date, date, date, this.cachedSettings.carry_over_days, date) as Record<string, unknown>[];
 
     const nowIso = now.toISOString();
     return rows

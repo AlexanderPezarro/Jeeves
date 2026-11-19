@@ -2,6 +2,8 @@ import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Fastify from "fastify";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { httpEventPoster, type EventPoster } from "./events.js";
+import { jeevesRoutes } from "./jeeves.js";
 import { buildMcpServer } from "./mcp.js";
 import { seedFromFile } from "./seed.js";
 import { TodoStore } from "./store.js";
@@ -11,19 +13,28 @@ export interface AppOptions {
   token: string;
   timeZone: string;
   now?: () => Date;
+  /** Jeeves server base URL (e.g. http://server:8080); task events are posted to <url>/plugin-events. */
+  jeevesUrl?: string;
+  /** Overrides the HTTP event poster built from jeevesUrl (tests). */
+  events?: EventPoster;
+  /** chores.yaml for the UI's "Import from chores.yaml" button. */
+  choresFile?: string;
 }
 
-export function buildApp({ store, token, timeZone, now }: AppOptions) {
+export function buildApp({ store, token, timeZone, now, jeevesUrl, events, choresFile }: AppOptions) {
   const app = Fastify({ logger: process.env.NODE_ENV !== "test" });
+  const poster = events ?? httpEventPoster({ jeevesUrl, token });
 
   app.get("/health", async () => ({ ok: true }));
+
+  app.register(jeevesRoutes, { prefix: "/jeeves", store, token, choresFile });
 
   // Stateless MCP over Streamable HTTP: one server + transport per request.
   app.post("/mcp", async (req, reply) => {
     if (req.headers.authorization !== `Bearer ${token}`) {
       return reply.code(401).send({ error: "unauthorized" });
     }
-    const server = buildMcpServer({ store, timeZone, now });
+    const server = buildMcpServer({ store, timeZone, now, events: poster });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     reply.raw.on("close", () => {
       void transport.close();
@@ -49,10 +60,19 @@ async function main() {
   const store = new TodoStore(dbPath);
   const seedPath = process.env.TODO_CHORES_FILE ?? "./chores.yaml";
   if (existsSync(seedPath)) {
-    const n = seedFromFile(store, seedPath);
-    console.log(`Loaded ${n} chores from ${seedPath}`);
+    // Seed only: chores already in the DB (or deleted in the UI) are left alone.
+    const { inserted, skipped } = seedFromFile(store, seedPath);
+    console.log(`Seeded ${inserted} new chores from ${seedPath} (${skipped} already in the database)`);
   }
-  const app = buildApp({ store, token, timeZone: process.env.TZ ?? "Europe/London" });
+  const jeevesUrl = process.env.JEEVES_URL || undefined;
+  if (!jeevesUrl) console.log("JEEVES_URL is not set; task events will not be sent");
+  const app = buildApp({
+    store,
+    token,
+    timeZone: process.env.TZ ?? "Europe/London",
+    jeevesUrl,
+    choresFile: seedPath,
+  });
   await app.listen({ host: "0.0.0.0", port: Number(process.env.PORT ?? 8081) });
 }
 
