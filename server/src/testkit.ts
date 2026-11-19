@@ -140,7 +140,7 @@ export function setup(opts: SetupOptions = {}) {
   const claude = scriptedClaude(opts.script ?? []);
   const agent = new Agent({ db, config, plugins, notifier, create: claude.create, now });
   const engine = new Engine(db, config, plugins, agent, now);
-  const app = buildApp({ db, engine, pairingCode: "pair-me-please", store });
+  const app = buildApp({ db, engine, pairingCode: "pair-me-please", store, config, plugins, now });
   return { clock, db, plugins: fake, notifier, claude, agent, engine, app, store, config };
 }
 

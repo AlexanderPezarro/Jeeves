@@ -31,6 +31,7 @@ export function buildMcpServer({ store, timeZone, now = () => new Date() }: McpD
         "List today's chores plus unfinished ones from the last few days, easiest first. " +
         "Each task has an id, effort (1-5), estimated minutes, how-to steps, state and overdue_days.",
       inputSchema: { date: z.string().optional().describe("YYYY-MM-DD; defaults to today") },
+      annotations: { readOnlyHint: true },
     },
     async ({ date }) => json(store.listDue(date ?? localDate(now(), timeZone), now())),
   );
@@ -40,6 +41,7 @@ export function buildMcpServer({ store, timeZone, now = () => new Date() }: McpD
     {
       description: "Full details for one chore, including how-to steps, timer steps and recent history.",
       inputSchema: { chore_id: z.string() },
+      annotations: { readOnlyHint: true },
     },
     async ({ chore_id }) => {
       const chore = store.getChore(chore_id);

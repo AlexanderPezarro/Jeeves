@@ -86,6 +86,27 @@ CREATE TABLE IF NOT EXISTS step_runs (
   error TEXT
 );
 CREATE INDEX IF NOT EXISTS step_runs_run ON step_runs (workflow_run_id);
+CREATE TABLE IF NOT EXISTS evaluations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL,
+  workflow_id TEXT NOT NULL,
+  trigger_kind TEXT NOT NULL,
+  event_id INTEGER,
+  fired INTEGER NOT NULL,
+  reason TEXT NOT NULL,
+  simulated INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS evaluations_time ON evaluations (at);
+CREATE INDEX IF NOT EXISTS evaluations_wf ON evaluations (workflow_id, at);
+CREATE TABLE IF NOT EXISTS activity (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  subject TEXT,
+  detail TEXT
+);
+CREATE INDEX IF NOT EXISTS activity_time ON activity (at);
+CREATE INDEX IF NOT EXISTS events_time ON events (received_at);
 `;
 
 /** Columns added after the first release, applied with a guarded ALTER TABLE. */
@@ -130,6 +151,36 @@ export interface Job {
   run_at: string;
   kind: string;
   payload: Record<string, unknown>;
+}
+
+export interface EvaluationRow {
+  id: number;
+  at: string;
+  workflow_id: string;
+  trigger_kind: "event" | "schedule";
+  event_id: number | null;
+  fired: boolean;
+  reason: string;
+  simulated: boolean;
+}
+
+export type ActivityKind = "config_reload" | "config_error" | "plugin_connect" | "plugin_disconnect";
+
+export interface ActivityRow {
+  id: number;
+  at: string;
+  kind: ActivityKind;
+  subject: string | null;
+  detail: unknown;
+}
+
+/** Filters shared by the activity feed queries. `before` is an exclusive upper bound used as the page cursor. */
+export interface FeedQuery {
+  from?: string;
+  to?: string;
+  before?: string;
+  workflow_id?: string;
+  limit: number;
 }
 
 export type WorkflowRunStatus = "running" | "waiting" | "ok" | "failed" | "stopped" | "capped" | "cancelled";
@@ -432,6 +483,117 @@ export class Db {
         .run(iso);
       this.sql.prepare("UPDATE runs SET status = 'error', error = 'interrupted by restart', finished_at = ? WHERE status = 'running'").run(iso);
       return steps;
+    })();
+  }
+
+  // Evaluations and activity --------------------------------------------------
+
+  recordEvaluation(e: Omit<EvaluationRow, "id">): number {
+    return Number(
+      this.sql
+        .prepare("INSERT INTO evaluations (at, workflow_id, trigger_kind, event_id, fired, reason, simulated) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        .run(e.at, e.workflow_id, e.trigger_kind, e.event_id, e.fired ? 1 : 0, e.reason, e.simulated ? 1 : 0).lastInsertRowid,
+    );
+  }
+
+  addActivity(kind: ActivityKind, subject: string | null, detail: unknown = null, now = new Date()): number {
+    return Number(
+      this.sql
+        .prepare("INSERT INTO activity (at, kind, subject, detail) VALUES (?, ?, ?, ?)")
+        .run(now.toISOString(), kind, subject, detail === null ? null : JSON.stringify(detail)).lastInsertRowid,
+    );
+  }
+
+  private feedWhere(q: FeedQuery, col: string, wfCol: string | null): { sql: string; args: unknown[] } {
+    const parts: string[] = [];
+    const args: unknown[] = [];
+    if (q.from) (parts.push(`${col} >= ?`), args.push(q.from));
+    if (q.to) (parts.push(`${col} <= ?`), args.push(q.to));
+    if (q.before) (parts.push(`${col} < ?`), args.push(q.before));
+    if (q.workflow_id && wfCol) (parts.push(`${wfCol} = ?`), args.push(q.workflow_id));
+    return { sql: parts.length ? `WHERE ${parts.join(" AND ")}` : "", args };
+  }
+
+  evaluations(q: FeedQuery & { fired?: boolean }): (EvaluationRow & { event_type: string | null })[] {
+    const w = this.feedWhere(q, "v.at", "v.workflow_id");
+    let where = w.sql;
+    if (q.fired !== undefined) where = `${where ? `${where} AND` : "WHERE"} v.fired = ${q.fired ? 1 : 0}`;
+    const rows = this.sql
+      .prepare(`SELECT v.*, e.type AS event_type FROM evaluations v LEFT JOIN events e ON e.id = v.event_id ${where} ORDER BY v.at DESC, v.id DESC LIMIT ?`)
+      .all(...w.args, q.limit) as Record<string, unknown>[];
+    return rows.map((r) => ({ ...(r as unknown as EvaluationRow & { event_type: string | null }), fired: r.fired === 1, simulated: r.simulated === 1 }));
+  }
+
+  activityRows(q: FeedQuery & { kinds?: string[] }): ActivityRow[] {
+    const w = this.feedWhere(q, "at", null);
+    let where = w.sql;
+    const args = [...w.args];
+    if (q.kinds?.length) {
+      where = `${where ? `${where} AND` : "WHERE"} kind IN (${q.kinds.map(() => "?").join(", ")})`;
+      args.push(...q.kinds);
+    }
+    if (q.workflow_id) return []; // activity rows are not tied to a workflow
+    const rows = this.sql.prepare(`SELECT * FROM activity ${where} ORDER BY at DESC, id DESC LIMIT ?`).all(...args, q.limit) as Record<string, unknown>[];
+    return rows.map((r) => ({ ...(r as unknown as ActivityRow), detail: parseJson(r.detail) }));
+  }
+
+  workflowRunsFeed(q: FeedQuery & { statuses?: string[] }): WorkflowRunRow[] {
+    const w = this.feedWhere(q, "started_at", "workflow_id");
+    let where = w.sql;
+    const args = [...w.args];
+    if (q.statuses?.length) {
+      where = `${where ? `${where} AND` : "WHERE"} status IN (${q.statuses.map(() => "?").join(", ")})`;
+      args.push(...q.statuses);
+    }
+    return (this.sql.prepare(`SELECT * FROM workflow_runs ${where} ORDER BY started_at DESC, id DESC LIMIT ?`).all(...args, q.limit) as Record<string, unknown>[]).map(
+      toWorkflowRun,
+    );
+  }
+
+  /** Token totals for runs created at or after `since`. */
+  tokensSince(since: string): { input_tokens: number; output_tokens: number; runs: number } {
+    return this.sql
+      .prepare("SELECT COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens, COUNT(*) AS runs FROM runs WHERE created_at >= ?")
+      .get(since) as { input_tokens: number; output_tokens: number; runs: number };
+  }
+
+  /** The most recent event from each paired device. */
+  lastEventPerDevice(): { device_id: number; name: string; last_event_type: string | null; last_event_at: string | null }[] {
+    return this.sql
+      .prepare(
+        `SELECT d.id AS device_id, d.name, e.type AS last_event_type, e.received_at AS last_event_at
+         FROM devices d LEFT JOIN events e ON e.id = (SELECT id FROM events WHERE device_id = d.id ORDER BY received_at DESC, id DESC LIMIT 1)
+         ORDER BY d.id`,
+      )
+      .all() as { device_id: number; name: string; last_event_type: string | null; last_event_at: string | null }[];
+  }
+
+  /**
+   * Retention: drops evaluations, activity, finished workflow runs (with their steps) and events
+   * older than `cutoff`. Claude runs are kept for token history (and because messages point at
+   * them) but their transcripts and inputs are cleared. Events still needed by a waiting run stay.
+   */
+  prune(cutoff: string): Record<string, number> {
+    return this.sql.transaction(() => {
+      const out: Record<string, number> = {};
+      out.evaluations = this.sql.prepare("DELETE FROM evaluations WHERE at < ?").run(cutoff).changes;
+      out.activity = this.sql.prepare("DELETE FROM activity WHERE at < ?").run(cutoff).changes;
+      out.step_runs = this.sql
+        .prepare("DELETE FROM step_runs WHERE workflow_run_id IN (SELECT id FROM workflow_runs WHERE finished_at IS NOT NULL AND finished_at < ?)")
+        .run(cutoff).changes;
+      out.workflow_runs = this.sql.prepare("DELETE FROM workflow_runs WHERE finished_at IS NOT NULL AND finished_at < ?").run(cutoff).changes;
+      out.events = this.sql
+        .prepare(
+          `DELETE FROM events WHERE received_at < ?
+             AND id NOT IN (SELECT event_id FROM workflow_runs WHERE event_id IS NOT NULL AND status IN ('running', 'waiting'))
+             AND id NOT IN (SELECT id FROM events e2 WHERE e2.id IN (SELECT MAX(id) FROM events GROUP BY type, device_id))`,
+        )
+        .run(cutoff).changes;
+      out.transcripts = this.sql
+        .prepare("UPDATE runs SET transcript = NULL, input = NULL WHERE created_at < ? AND (transcript IS NOT NULL OR input IS NOT NULL)")
+        .run(cutoff).changes;
+      out.jobs = this.sql.prepare("DELETE FROM jobs WHERE (done_at IS NOT NULL OR cancelled_at IS NOT NULL) AND run_at < ?").run(cutoff).changes;
+      return out;
     })();
   }
 

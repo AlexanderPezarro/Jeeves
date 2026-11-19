@@ -1,15 +1,21 @@
 import Fastify, { type FastifyRequest } from "fastify";
 import { z } from "zod";
-import { registerConfigRoutes } from "./api.js";
+import { registerConfigRoutes, registerObservabilityRoutes } from "./api.js";
+import type { ConfigSource } from "./config.js";
 import type { ConfigStore } from "./configstore.js";
 import type { Db, Device } from "./db.js";
 import type { Engine } from "./engine.js";
+import type { PluginHost } from "./plugins.js";
 
 export interface AppDeps {
   db: Db;
   engine: Engine;
-  /** Live config; enables the workflow and config routes. */
+  /** Live config; enables the workflow, config and observability routes. */
   store?: ConfigStore;
+  /** Defaults to `store`. Tests pass a static config. */
+  config?: ConfigSource;
+  plugins?: PluginHost;
+  now?: () => Date;
   /** One-time code typed into the app to pair a phone. */
   pairingCode: string;
 }
@@ -25,7 +31,7 @@ const eventBody = z.object({
   payload: z.record(z.string(), z.unknown()).default({}),
 });
 
-export function buildApp({ db, engine, pairingCode, store }: AppDeps) {
+export function buildApp({ db, engine, pairingCode, store, config = store, plugins, now }: AppDeps) {
   const app = Fastify({ logger: process.env.NODE_ENV !== "test" });
 
   app.get("/health", async () => ({ ok: true }));
@@ -107,6 +113,7 @@ export function buildApp({ db, engine, pairingCode, store }: AppDeps) {
     authed.get("/runs", async () => ({ runs: db.recentRuns() }));
 
     if (store) registerConfigRoutes(authed, { db, engine, store });
+    if (config && plugins) registerObservabilityRoutes(authed, { db, engine, config, store, plugins, now });
   });
 
   return app;

@@ -129,7 +129,9 @@ export class ConfigStore extends EventEmitter implements ConfigSource {
     return join(this.dir, file);
   }
 
+  /** Records a file's error; `error_recorded` fires only when the error is new or different. */
   private setError(file: string, error: string) {
+    if (this.fileErrors.get(file)?.error === error) return;
     this.fileErrors.set(file, { file, error, at: this.now().toISOString() });
     this.emit("error_recorded", { file, error });
   }

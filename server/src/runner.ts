@@ -90,7 +90,12 @@ export class WorkflowRunner {
     this.now = deps.now ?? (() => new Date());
   }
 
-  async start(workflow: Workflow, ctx: StartContext): Promise<RunOutcome> {
+  start(workflow: Workflow, ctx: StartContext): Promise<RunOutcome> {
+    return this.begin(workflow, ctx).done;
+  }
+
+  /** Inserts the run row synchronously (so callers get its id) and executes in the background. */
+  begin(workflow: Workflow, ctx: StartContext): { workflowRunId: number; done: Promise<RunOutcome> } {
     const { db } = this.deps;
     const local = localTime(this.now(), this.deps.config.current.timezone);
     const eventId = ctx.event && ctx.event.id > 0 ? ctx.event.id : null;
@@ -106,7 +111,7 @@ export class WorkflowRunner {
       this.now(),
     );
     const tctx: TemplateContext = { event: ctx.event ? eventContext(ctx.event) : {}, steps: {} };
-    return this.execute(id, workflow, tctx, "0", !!ctx.dryRun, eventId);
+    return { workflowRunId: id, done: this.execute(id, workflow, tctx, "0", !!ctx.dryRun, eventId) };
   }
 
   /** Continues a waiting run after the step at `stepPath`. Does nothing if the run is no longer waiting. */

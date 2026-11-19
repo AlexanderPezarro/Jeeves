@@ -1,8 +1,11 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
+import { formatIssues, type ConfigSource } from "./config.js";
 import { ConfigWriteError, type ConfigStore } from "./configstore.js";
 import type { Db } from "./db.js";
 import type { Engine } from "./engine.js";
+import type { PluginHost } from "./plugins.js";
+import { activityFeed, health, runDetailById, upcoming } from "./timeline.js";
 
 export interface ApiDeps {
   db: Db;
@@ -85,4 +88,87 @@ export function registerConfigRoutes(app: FastifyInstance, { db, store }: ApiDep
   });
 
   app.get("/config/errors", async () => ({ errors: store.errors }));
+}
+
+/** Built-in event types the trigger picker always offers. */
+export const BUILTIN_EVENTS = ["wifi.connected", "wifi.disconnected", "location.arrived", "location.left", "manual.plan"];
+
+/** Observability, simulate and run-now routes. Registered under both auth scopes, like the config routes. */
+export function registerObservabilityRoutes(
+  app: FastifyInstance,
+  { db, engine, config, store, plugins, now = () => new Date() }: { db: Db; engine: Engine; config: ConfigSource; store?: ConfigStore; plugins: PluginHost; now?: () => Date },
+) {
+  const deps = { db, config, plugins, store };
+
+  app.get("/timeline/upcoming", async (req) => {
+    const hours = Math.min(Math.max(Number((req.query as { hours?: string }).hours ?? 48) || 48, 1), 24 * 14);
+    return upcoming(deps, hours, now());
+  });
+
+  app.get("/activity", async (req) => {
+    const q = req.query as Record<string, string | undefined>;
+    return activityFeed(deps, {
+      from: q.from,
+      to: q.to,
+      workflow: q.workflow,
+      kind: q.kind,
+      status: q.status,
+      limit: q.limit ? Number(q.limit) : undefined,
+      cursor: q.cursor,
+    });
+  });
+
+  app.get("/health/summary", async () => health(deps, now()));
+
+  app.post("/simulate", async (req, reply) => {
+    const body = z
+      .object({ event_type: z.string().regex(/^[a-z0-9_.-]+$/), payload: z.record(z.string(), z.unknown()).default({}), at: z.string().datetime({ offset: true }).optional() })
+      .safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "validation", issues: formatIssues(body.error) });
+    const at = body.data.at ? new Date(body.data.at) : now();
+    return { at: at.toISOString(), decisions: engine.simulate(body.data.event_type, body.data.payload, at) };
+  });
+
+  app.post("/workflows/:id/run", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = z.object({ dry_run: z.boolean().default(false), payload: z.record(z.string(), z.unknown()).default({}) }).safeParse(req.body ?? {});
+    if (!body.success) return reply.code(400).send({ error: "validation", issues: formatIssues(body.error) });
+    let run;
+    try {
+      run = engine.runNow(id, { dryRun: body.data.dry_run, payload: body.data.payload });
+    } catch (e) {
+      if ((e as { notFound?: boolean }).notFound) return reply.code(404).send({ error: "not_found", message: (e as Error).message });
+      throw e;
+    }
+    // Dry runs finish straight away (waits are skipped), so the caller gets the whole result.
+    if (body.data.dry_run) await run.done;
+    return { workflow_run_id: run.workflowRunId, run: runDetailById(db, run.workflowRunId) };
+  });
+
+  app.get("/workflow-runs/:id", async (req, reply) => {
+    const run = runDetailById(db, Number((req.params as { id: string }).id));
+    return run ?? reply.code(404).send({ error: "not_found" });
+  });
+
+  app.get("/runs/:id", async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    const run = db.getRun(id);
+    if (!run) return reply.code(404).send({ error: "not_found" });
+    return { ...run, messages: db.messagesForRun(id) };
+  });
+
+  app.delete("/jobs/:id", async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!db.getJob(id)) return reply.code(404).send({ error: "not_found" });
+    if (!engine.cancelJob(id)) return reply.code(409).send({ error: "conflict", message: "job already ran or was cancelled" });
+    return { ok: true };
+  });
+
+  app.get("/tools", async () => ({ tools: await plugins.listTools() }));
+
+  app.get("/event-types", async () => {
+    const seen = db.eventTypes().filter((t) => !t.startsWith("schedule.") && t !== "manual.run");
+    const pluginEvents = (plugins as { manifestEvents?: () => string[] }).manifestEvents?.() ?? [];
+    return { event_types: [...new Set([...BUILTIN_EVENTS, ...pluginEvents, ...seen])] };
+  });
 }

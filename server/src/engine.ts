@@ -69,26 +69,57 @@ export class Engine {
     const local = localTime(now, this.config.current.timezone);
     for (const d of decisions) {
       console.log(`Workflow ${d.workflow_id} on ${type}: ${d.fired ? "FIRE" : "skip"} (${d.reason})`);
+      const trigger = isSchedule(d.workflow.triggers[d.trigger_index]) ? "schedule" : "event";
+      this.db.recordEvaluation({
+        at: now.toISOString(),
+        workflow_id: d.workflow_id,
+        trigger_kind: trigger,
+        event_id: event.id,
+        fired: d.fired,
+        reason: d.reason,
+        simulated: false,
+      });
       if (!d.fired) continue;
       this.db.recordFire(d.workflow_id, event.id, local.date, now);
-      const trigger = isSchedule(d.workflow.triggers[d.trigger_index]) ? "schedule" : "event";
       this.background(this.runner.start(d.workflow, { event, trigger }));
     }
     return { event, decisions: decisions.map((d) => ({ workflow_id: d.workflow_id, fired: d.fired, reason: d.reason })) };
   }
 
-  /** Runs a workflow now, bypassing triggers and cooldown. Resolves once the run stops or waits. */
-  async runNow(workflowId: string, opts: { dryRun?: boolean; payload?: Record<string, unknown> } = {}): Promise<RunOutcome> {
+  /**
+   * What would fire for this event at `at` (default now). Nothing is stored or run: the event is
+   * built in memory and no evaluations are written, so simulating never pollutes history.
+   */
+  simulate(type: string, payload: Record<string, unknown>, at?: Date): DecisionView[] {
+    const when = at ?? this.now();
+    const event: EventRow = { id: 0, device_id: null, type, payload, received_at: when.toISOString() };
+    return this.evaluate(event, when).map((d) => ({ workflow_id: d.workflow_id, fired: d.fired, reason: d.reason }));
+  }
+
+  /**
+   * Runs a workflow now, bypassing triggers and cooldown. Returns the run id at once; `done`
+   * resolves when the run finishes, stops or starts waiting.
+   */
+  runNow(workflowId: string, opts: { dryRun?: boolean; payload?: Record<string, unknown> } = {}): { workflowRunId: number; done: Promise<RunOutcome> } {
     const wf = this.workflows.find((w) => w.id === workflowId);
-    if (!wf) throw new Error(`no workflow ${workflowId}`);
+    if (!wf) throw Object.assign(new Error(`no workflow ${workflowId}`), { notFound: true });
     const payload = opts.payload ?? {};
     // Real runs get an event row so a later `wait` can rebuild {{event.*}} on resume.
     const event = opts.dryRun
       ? { id: 0, device_id: null, type: "manual.run", payload, received_at: this.now().toISOString() }
       : this.db.insertEvent("manual.run", { workflow_id: workflowId, ...payload }, null, this.now());
-    const run = this.runner.start(wf, { event, trigger: "manual", dryRun: opts.dryRun });
-    this.background(run);
+    const run = this.runner.begin(wf, { event, trigger: "manual", dryRun: opts.dryRun });
+    this.background(run.done);
     return run;
+  }
+
+  /** Retention: drops history older than `activity_retention_days`. Runs daily at 03:30 local time. */
+  prune(now = this.now()) {
+    const days = this.config.current.activity_retention_days;
+    const cutoff = new Date(now.getTime() - days * 86_400_000).toISOString();
+    const out = this.db.prune(cutoff);
+    console.log(`Pruned history older than ${days} days`, JSON.stringify(out));
+    return out;
   }
 
   /** A free-text message from the phone. */
@@ -166,10 +197,18 @@ export class Engine {
 
   /** Workflow schedules with their next run, for logs, tests and the timeline. */
   scheduled(): { workflow_id: string; schedule: string; next: string | null }[] {
-    return this.crons.map((c) => ({ workflow_id: c.workflow_id, schedule: c.schedule, next: c.cron.nextRun()?.toISOString() ?? null }));
+    return this.crons.filter((c) => c.workflow_id).map((c) => ({ workflow_id: c.workflow_id, schedule: c.schedule, next: c.cron.nextRun()?.toISOString() ?? null }));
   }
 
   private scheduleCrons() {
+    const retention = new Cron("30 3 * * *", { timezone: this.config.current.timezone }, () => {
+      try {
+        this.prune();
+      } catch (e) {
+        console.error("Prune failed", e);
+      }
+    });
+    this.crons.push({ workflow_id: "", schedule: "30 3 * * *", cron: retention });
     for (const wf of this.workflows) {
       if (!wf.enabled) continue;
       for (const t of wf.triggers) {

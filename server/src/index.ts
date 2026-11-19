@@ -9,6 +9,7 @@ import { Engine } from "./engine.js";
 import { migrateRules } from "./migrate.js";
 import { makeNotifier } from "./notify.js";
 import { McpPluginHost } from "./plugins.js";
+import { recordConfigActivity } from "./timeline.js";
 
 function configDir(): string {
   const dir = process.env.JEEVES_CONFIG_DIR ?? "./config";
@@ -39,7 +40,11 @@ async function main() {
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = new Db(dbPath);
 
-  const plugins = new McpPluginHost(store.current.plugins);
+  recordConfigActivity(store, db);
+  const plugins = new McpPluginHost(store.current.plugins, {
+    onStatusChange: (name, reachable, status) =>
+      db.addActivity(reachable ? "plugin_connect" : "plugin_disconnect", name, { error: status.last_error, tool_count: status.tool_count }),
+  });
   store.on("reload", (diff) => {
     console.log("Config reloaded", JSON.stringify(diff));
     plugins.setPlugins(store.current.plugins);
@@ -57,7 +62,7 @@ async function main() {
   const engine = new Engine(db, store, plugins, agent);
   engine.start();
 
-  const app = buildApp({ db, engine, pairingCode, store });
+  const app = buildApp({ db, engine, pairingCode, store, plugins });
   await app.listen({ host: "0.0.0.0", port: Number(process.env.PORT ?? 8080) });
 
   const shutdown = async () => {
