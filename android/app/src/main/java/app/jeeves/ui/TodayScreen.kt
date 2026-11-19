@@ -35,6 +35,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import app.jeeves.Api
+import app.jeeves.ApiException
 import app.jeeves.Prefs
 import app.jeeves.Task
 import app.jeeves.Work
@@ -48,12 +49,21 @@ fun TodayScreen(prefs: Prefs, modifier: Modifier = Modifier) {
     var tasks by remember { mutableStateOf<List<Task>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var status by remember { mutableStateOf<String?>(null) }
+    var noTodayPlugin by remember { mutableStateOf(false) }
 
     fun refresh() = scope.launch {
         loading = true
         status = try {
             tasks = api.today()
+            noTodayPlugin = false
             null
+        } catch (e: ApiException) {
+            // The server answers 404 when no plugin provides the Today list.
+            if (e.code == 404) {
+                tasks = emptyList()
+                noTodayPlugin = true
+                null
+            } else e.message
         } catch (e: Exception) {
             e.message
         }
@@ -98,6 +108,10 @@ fun TodayScreen(prefs: Prefs, modifier: Modifier = Modifier) {
             loading && tasks.isEmpty() -> Row(Modifier.fillMaxWidth().padding(32.dp), horizontalArrangement = Arrangement.Center) {
                 CircularProgressIndicator()
             }
+            noTodayPlugin -> Text(
+                "No plugin provides a Today list yet. Add one (such as the todo plugin) on the server to see tasks here.",
+                modifier = Modifier.padding(top = 24.dp),
+            )
             tasks.isEmpty() -> Text("Nothing due. Enjoy your evening.", modifier = Modifier.padding(top = 24.dp))
             else -> LazyColumn(
                 contentPadding = PaddingValues(vertical = 8.dp),
