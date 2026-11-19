@@ -1,5 +1,5 @@
 # Jeeves: control server + to-do plugin.
-# Put your settings in server/jeeves.yaml, plugins/todo/chores.yaml and .env (see the *.example files).
+# Put your settings in config/ (copy config.example/), plugins/todo/chores.yaml and .env (see the *.example files).
 services:
   server:
     build: ./server
@@ -7,17 +7,19 @@ services:
     env_file: .env
     environment:
       TZ: Europe/London
-      JEEVES_CONFIG: /config/jeeves.yaml
+      # config/ holds jeeves.yaml, workflows/ and plugins/. Mounted read-write: the server migrates
+      # old rules into workflows/ and the web UI edits these files. Must be writable by uid 1000.
+      JEEVES_CONFIG_DIR: /config
       JEEVES_DB_PATH: /data/jeeves.db
       # "cli" (default) drives Claude through the Claude Code CLI login mounted below; "api" uses ANTHROPIC_API_KEY.
       JEEVES_CLAUDE_BACKEND: ${JEEVES_CLAUDE_BACKEND:-cli}
     volumes:
-      - ./server/jeeves.yaml:/config/jeeves.yaml:ro
+      - ./config:/config
       - jeeves-data:/data
       # The host's Claude Code login (subscription credentials). Container user is uid 1000.
       - ${CLAUDE_HOME:-~/.claude}:/home/node/.claude
-      # Uncomment to enable push, and set FIREBASE_SERVICE_ACCOUNT=/config/firebase.json in .env
-      # - ./firebase.json:/config/firebase.json:ro
+      # Uncomment to enable push, and set FIREBASE_SERVICE_ACCOUNT=/secrets/firebase.json in .env
+      # - ./firebase.json:/secrets/firebase.json:ro
     ports:
       # Put this behind your Cloudflare tunnel or Tailscale; only the app needs to reach it.
       - "${JEEVES_BIND:-0.0.0.0}:${JEEVES_PORT:-8080}:8080"

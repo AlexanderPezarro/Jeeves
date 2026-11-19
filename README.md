@@ -7,14 +7,15 @@ list, easiest first, with steps for each item. You tick things off from the noti
 replying in plain English, and timed chores like laundry nudge you when the cycle is done.
 
 ```
-Android app ──events──▶ server (rules, scheduler, Claude) ──MCP──▶ to-do plugin
+Android app ──events──▶ server (workflows, scheduler, Claude) ──MCP──▶ to-do plugin
      ▲                         │
      └───── messages ──────────┘
 ```
 
 | Folder | What it is |
 | --- | --- |
-| [`server/`](server) | Control plane: event API, rule engine, job scheduler, plugin host, Claude runs. TypeScript, Fastify, SQLite. |
+| [`server/`](server) | Control plane: event API, workflow engine, job scheduler, plugin host, Claude runs. TypeScript, Fastify, SQLite. |
+| [`config.example/`](config.example) | Template for the live `config/` directory: globals and one file per workflow. |
 | [`plugins/todo/`](plugins/todo) | To-do plugin: chores, recurrence, completion and timer steps, exposed as MCP tools. |
 | [`android/`](android) | Native Android app (Kotlin, Jetpack Compose): Today list, chat with Jeeves, Wi-Fi trigger, notifications. |
 
@@ -23,16 +24,59 @@ Android app ──events──▶ server (rules, scheduler, Claude) ──MCP─
 1. **Triggers.** The app watches for your home Wi-Fi. When you join it, it posts `wifi.connected`
    with how long you were away. Schedules (cron) and the app's "Plan my evening" button are triggers
    too.
-2. **Rules.** `server/jeeves.yaml` says which events matter, e.g. "home Wi-Fi, after 17:00, away at
-   least 2 hours, once a day". No Claude call is spent deciding whether a rule fires.
-3. **Claude.** A firing rule starts a short Claude run. Claude can call the plugins' tools
-   (`todo__list_due_tasks`, `todo__complete_task`, …) plus two built-ins: `send_message` and
-   `schedule_followup`. Only `send_message` reaches your phone.
+2. **Workflows.** Each file in `config/workflows/` says which events matter, e.g. "home Wi-Fi,
+   after 17:00, away at least 2 hours, once a day", and what to do then. No Claude call is spent
+   deciding whether a workflow fires.
+3. **Steps.** A firing workflow runs its steps in order: call a plugin tool, start a Claude run,
+   send a message, wait (minutes, or until a time of day), branch with `if`, or `stop`. A Claude
+   step can call the plugins' tools (`todo__list_due_tasks`, `todo__complete_task`, …) plus two
+   built-ins: `send_message` and `schedule_followup`. Only messages reach your phone.
 4. **Completion.** Tap Done/Snooze/Skip on a notification or in the Today list, or reply in the chat
    ("dishes done, laundry is in"). Starting a timed chore schedules its follow-up nudges.
 
-Every run is logged in the server's database with its input, transcript and token counts
-(`GET /runs`). `max_runs_per_day` caps spend.
+Every workflow run and each of its steps is logged in the server's database, and every Claude run
+with its input, transcript and token counts (`GET /runs`). `max_runs_per_day` caps spend.
+
+## Configuration
+
+```
+config/
+  jeeves.yaml              # timezone, model, effort, max_runs_per_day, about_me, plugins
+  workflows/<id>.yaml      # one workflow per file; the file name must equal its id
+  plugins/<name>.yaml      # settings for each plugin
+```
+
+A workflow:
+
+```yaml
+id: laundry-check
+description: Nudge me while the washing is on
+cooldown: 0                     # "daily" (default) or minutes between fires
+notify_on_failure: true         # message me if a step fails (default)
+triggers:
+  - event: todo.task_started    # or wifi.connected, manual.plan, …; or `schedule: "0 9 * * sat"`
+    when:                       # optional: ssid, after, before, days, min_away_minutes, conditions
+      conditions: [{ path: event.chore_id, eq: laundry }]
+steps:
+  - id: pause
+    wait: { minutes: 75 }       # or { until: "18:30" }; waits survive restarts
+  - id: nudge
+    message: { text: "Wash is done: time to move {{event.name}} to the dryer" }
+```
+
+Step types: `call: {plugin, tool, args}`, `claude: {prompt, tools?}` (`tools` is an allowlist),
+`message: {text, items?}`, `wait`, `if: <condition> then: [...] else: [...]`, `stop: {reason?}`.
+Conditions are `{path, eq|ne|gt|gte|lt|lte|contains|exists}` or `{all: [...]}` / `{any: [...]}`.
+Templates only know `{{event.<field>}}` and `{{steps.<id>.<field>}}`.
+
+The server watches `config/` and reloads on save. A file that fails validation keeps its last good
+version and shows up in `GET /config/errors`; the others still load. Edits through the API are
+checked against the file's hash, so a stale edit is refused (409) rather than overwriting yours.
+
+**Upgrading from `server/jeeves.yaml`:** back up the `jeeves-data` volume, then
+`mkdir config && cp server/jeeves.yaml config/`. On first start the server moves `rules:` into
+`config/workflows/` (one file per rule, same id, so "once a day" history carries over), keeps a
+`jeeves.yaml.bak-<date>` copy and removes `rules:` from `jeeves.yaml`.
 
 ## Plugins
 
@@ -53,7 +97,7 @@ same contract without changes to the server.
 
 ```bash
 cp .env.example .env                                   # API key, pairing code, plugin token
-cp server/jeeves.example.yaml server/jeeves.yaml       # rules: set your home Wi-Fi name
+cp -r config.example config                           # set your home Wi-Fi name in config/workflows/arrive-home.yaml
 cp plugins/todo/chores.example.yaml plugins/todo/chores.yaml
 docker compose up -d --build
 ```
@@ -81,8 +125,8 @@ of minutes after a trigger. Firebase push (instant delivery) is wired into the s
 ## Development
 
 ```bash
-cd server && npm install && npm test          # 14 tests, Claude (API and CLI) is scripted
-cd plugins/todo && npm install && npm test    # 6 tests, including a real MCP round trip
+cd server && npm install && npm test          # Claude (API and CLI) is scripted
+cd plugins/todo && npm install && npm test    # including a real MCP round trip
 ```
 
 The design doc covers the reasoning and the roadmap.

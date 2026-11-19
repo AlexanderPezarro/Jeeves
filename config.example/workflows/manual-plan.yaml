@@ -1,0 +1,9 @@
+# The "Plan my day" button in the app.
+id: manual-plan
+cooldown: 5
+triggers:
+  - event: manual.plan
+steps:
+  - id: plan
+    claude:
+      prompt: I've asked for a plan now. Send me what's due, easiest first.

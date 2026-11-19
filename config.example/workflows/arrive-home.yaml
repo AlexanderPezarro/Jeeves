@@ -1,0 +1,17 @@
+# The worked example: back home after being out for a while, in the evening.
+id: arrive-home
+description: Evening plan when I get home
+enabled: true
+# "daily" = at most once per local day; a number = minimum minutes between fires.
+cooldown: daily
+triggers:
+  - event: wifi.connected
+    when:
+      ssid: MyHomeWiFi
+      after: "17:00"
+      before: "22:30"
+      min_away_minutes: 120
+steps:
+  - id: plan
+    claude:
+      prompt: I've just got home. Send me tonight's to-do list, easiest first.

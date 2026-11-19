@@ -9,6 +9,8 @@ export interface PluginTool {
   tool: string;
   description: string;
   input_schema: Record<string, unknown>;
+  /** From the MCP tool annotations (readOnlyHint). Dry runs only call read-only tools. */
+  read_only: boolean;
 }
 
 export interface ToolResult {
@@ -37,9 +39,22 @@ export class McpPluginHost implements PluginHost {
   private clients = new Map<string, Client>();
 
   constructor(
-    private readonly plugins: PluginConfig[],
+    private plugins: PluginConfig[],
     private readonly env: NodeJS.ProcessEnv = process.env,
   ) {}
+
+  /** Swaps the plugin list after a config reload; clients for removed or changed plugins are dropped. */
+  setPlugins(plugins: PluginConfig[]) {
+    for (const [name, client] of this.clients) {
+      const before = this.plugins.find((p) => p.name === name);
+      const after = plugins.find((p) => p.name === name);
+      if (!after || JSON.stringify(before) !== JSON.stringify(after)) {
+        void client.close().catch(() => {});
+        this.clients.delete(name);
+      }
+    }
+    this.plugins = plugins;
+  }
 
   private async client(name: string): Promise<Client> {
     const existing = this.clients.get(name);
@@ -70,6 +85,7 @@ export class McpPluginHost implements PluginHost {
             tool: t.name,
             description: t.description ?? "",
             input_schema: t.inputSchema as Record<string, unknown>,
+            read_only: t.annotations?.readOnlyHint === true,
           });
         }
       } catch (e) {

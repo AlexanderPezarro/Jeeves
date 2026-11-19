@@ -1,0 +1,23 @@
+# A morning heads-up at weekends. Shows the step types beyond a single Claude run.
+id: weekend-morning
+description: Weekend heads-up, only if something is due
+cooldown: daily
+triggers:
+  - schedule: "0 9 * * sat,sun"
+steps:
+  # A plain tool call: no Claude tokens spent to find out whether anything is due.
+  - id: due
+    call:
+      plugin: todo
+      tool: list_due_tasks
+  - id: anything
+    if: { path: steps.due.0, exists: true }
+    then:
+      - id: plan
+        claude:
+          prompt: "Good morning. Give me a short heads-up of today's chores, easiest first. The first one is {{steps.due.0.name}}."
+          # Optional allowlist: only these tools are offered to Claude in this step.
+          tools: [todo__list_due_tasks, todo__get_chore, send_message]
+    else:
+      - id: quiet
+        stop: { reason: nothing due }
