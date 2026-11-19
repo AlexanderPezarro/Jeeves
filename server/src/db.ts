@@ -55,7 +55,65 @@ CREATE TABLE IF NOT EXISTS jobs (
   done_at TEXT
 );
 CREATE INDEX IF NOT EXISTS jobs_due ON jobs (done_at, run_at);
+CREATE TABLE IF NOT EXISTS workflow_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  workflow_id TEXT NOT NULL,
+  trigger TEXT NOT NULL,
+  event_id INTEGER,
+  status TEXT NOT NULL,
+  dry_run INTEGER NOT NULL DEFAULT 0,
+  definition TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  error TEXT,
+  local_date TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS workflow_runs_wf ON workflow_runs (workflow_id, started_at);
+CREATE INDEX IF NOT EXISTS workflow_runs_time ON workflow_runs (started_at);
+CREATE TABLE IF NOT EXISTS step_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  workflow_run_id INTEGER NOT NULL,
+  step_id TEXT NOT NULL,
+  path TEXT NOT NULL,
+  type TEXT NOT NULL,
+  status TEXT NOT NULL,
+  input TEXT,
+  output TEXT,
+  warnings TEXT,
+  run_id INTEGER,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  error TEXT
+);
+CREATE INDEX IF NOT EXISTS step_runs_run ON step_runs (workflow_run_id);
+CREATE TABLE IF NOT EXISTS evaluations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL,
+  workflow_id TEXT NOT NULL,
+  trigger_kind TEXT NOT NULL,
+  event_id INTEGER,
+  fired INTEGER NOT NULL,
+  reason TEXT NOT NULL,
+  simulated INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS evaluations_time ON evaluations (at);
+CREATE INDEX IF NOT EXISTS evaluations_wf ON evaluations (workflow_id, at);
+CREATE TABLE IF NOT EXISTS activity (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  subject TEXT,
+  detail TEXT
+);
+CREATE INDEX IF NOT EXISTS activity_time ON activity (at);
+CREATE INDEX IF NOT EXISTS events_time ON events (received_at);
 `;
+
+/** Columns added after the first release, applied with a guarded ALTER TABLE. */
+const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
+  ["jobs", "cancelled_at", "TEXT"],
+  ["runs", "workflow_run_id", "INTEGER"],
+];
 
 export interface Device {
   id: number;
@@ -95,7 +153,85 @@ export interface Job {
   payload: Record<string, unknown>;
 }
 
+export interface EvaluationRow {
+  id: number;
+  at: string;
+  workflow_id: string;
+  trigger_kind: "event" | "schedule";
+  event_id: number | null;
+  fired: boolean;
+  reason: string;
+  simulated: boolean;
+}
+
+export type ActivityKind = "config_reload" | "config_error" | "plugin_connect" | "plugin_disconnect";
+
+export interface ActivityRow {
+  id: number;
+  at: string;
+  kind: ActivityKind;
+  subject: string | null;
+  detail: unknown;
+}
+
+/** Filters shared by the activity feed queries. `before` is an exclusive upper bound used as the page cursor. */
+export interface FeedQuery {
+  from?: string;
+  to?: string;
+  before?: string;
+  workflow_id?: string;
+  limit: number;
+}
+
+export type WorkflowRunStatus = "running" | "waiting" | "ok" | "failed" | "stopped" | "capped" | "cancelled";
+export type StepRunStatus = "running" | "ok" | "failed" | "skipped" | "capped" | "waiting" | "cancelled";
+export type RunTrigger = "event" | "schedule" | "manual" | "simulate";
+
+export interface WorkflowRunRow {
+  id: number;
+  workflow_id: string;
+  trigger: RunTrigger;
+  event_id: number | null;
+  status: WorkflowRunStatus;
+  dry_run: boolean;
+  definition: unknown;
+  started_at: string;
+  finished_at: string | null;
+  error: string | null;
+  local_date: string;
+}
+
+export interface StepRunRow {
+  id: number;
+  workflow_run_id: number;
+  step_id: string;
+  path: string;
+  type: string;
+  status: StepRunStatus;
+  input: unknown;
+  output: unknown;
+  warnings: string[];
+  run_id: number | null;
+  started_at: string;
+  finished_at: string | null;
+  error: string | null;
+}
+
 const hash = (token: string) => createHash("sha256").update(token).digest("hex");
+const parseJson = (s: unknown): unknown => (typeof s === "string" ? JSON.parse(s) : null);
+
+function toWorkflowRun(r: Record<string, unknown>): WorkflowRunRow {
+  return { ...(r as unknown as WorkflowRunRow), dry_run: r.dry_run === 1, definition: parseJson(r.definition) };
+}
+
+function toStepRun(r: Record<string, unknown>): StepRunRow {
+  return {
+    ...(r as unknown as StepRunRow),
+    input: parseJson(r.input),
+    output: parseJson(r.output),
+    warnings: (parseJson(r.warnings) as string[] | null) ?? [],
+  };
+}
 
 export class Db {
   readonly sql: Database.Database;
@@ -104,6 +240,10 @@ export class Db {
     this.sql = new Database(path);
     this.sql.pragma("journal_mode = WAL");
     this.sql.exec(SCHEMA);
+    for (const [table, column, type] of ADDED_COLUMNS) {
+      const cols = this.sql.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+      if (!cols.some((c) => c.name === column)) this.sql.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    }
   }
 
   // Devices ---------------------------------------------------------------
@@ -143,6 +283,11 @@ export class Db {
     return { id: Number(info.lastInsertRowid), device_id: deviceId, type, payload, received_at };
   }
 
+  getEvent(id: number): EventRow | undefined {
+    const r = this.sql.prepare("SELECT * FROM events WHERE id = ?").get(id) as (Omit<EventRow, "payload"> & { payload: string }) | undefined;
+    return r ? { ...r, payload: JSON.parse(r.payload) as Record<string, unknown> } : undefined;
+  }
+
   /** Most recent event of `type` before `before` whose payload has the given SSID (if any). */
   lastEvent(type: string, before: string, ssid?: string): EventRow | undefined {
     const rows = this.sql
@@ -155,7 +300,12 @@ export class Db {
     return undefined;
   }
 
-  // Rule fires --------------------------------------------------------------
+  /** Distinct event types seen so far, for the trigger picker. */
+  eventTypes(): string[] {
+    return (this.sql.prepare("SELECT DISTINCT type FROM events ORDER BY type").all() as { type: string }[]).map((r) => r.type);
+  }
+
+  // Fires: the cooldown ledger, keyed by workflow id (formerly rule id) ----------
 
   recordFire(ruleId: string, eventId: number | null, localDate: string, now = new Date()): void {
     this.sql
@@ -171,12 +321,15 @@ export class Db {
 
   // Runs --------------------------------------------------------------------
 
-  startRun(r: { kind: string; rule_id?: string; event_id?: number; model: string; input: string; local_date: string }, now = new Date()): number {
+  startRun(
+    r: { kind: string; rule_id?: string; event_id?: number; workflow_run_id?: number; model: string; input: string; local_date: string },
+    now = new Date(),
+  ): number {
     const info = this.sql
       .prepare(
-        "INSERT INTO runs (kind, rule_id, event_id, model, status, input, local_date, created_at) VALUES (?, ?, ?, ?, 'running', ?, ?, ?)",
+        "INSERT INTO runs (kind, rule_id, event_id, workflow_run_id, model, status, input, local_date, created_at) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?)",
       )
-      .run(r.kind, r.rule_id ?? null, r.event_id ?? null, r.model, r.input, r.local_date, now.toISOString());
+      .run(r.kind, r.rule_id ?? null, r.event_id ?? null, r.workflow_run_id ?? null, r.model, r.input, r.local_date, now.toISOString());
     return Number(info.lastInsertRowid);
   }
 
@@ -207,9 +360,241 @@ export class Db {
   recentRuns(limit = 20): unknown[] {
     return this.sql
       .prepare(
-        "SELECT id, kind, rule_id, event_id, model, status, input_tokens, output_tokens, error, created_at, finished_at FROM runs ORDER BY id DESC LIMIT ?",
+        "SELECT id, kind, rule_id, event_id, workflow_run_id, model, status, input_tokens, output_tokens, error, created_at, finished_at FROM runs ORDER BY id DESC LIMIT ?",
       )
       .all(limit);
+  }
+
+  getRun(id: number): Record<string, unknown> | undefined {
+    const r = this.sql.prepare("SELECT * FROM runs WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+    return r ? { ...r, transcript: parseJson(r.transcript) } : undefined;
+  }
+
+  // Workflow runs -----------------------------------------------------------
+
+  startWorkflowRun(
+    r: { workflow_id: string; trigger: RunTrigger; event_id: number | null; dry_run: boolean; definition: unknown; local_date: string },
+    now = new Date(),
+  ): number {
+    const info = this.sql
+      .prepare(
+        "INSERT INTO workflow_runs (workflow_id, trigger, event_id, status, dry_run, definition, started_at, local_date) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)",
+      )
+      .run(r.workflow_id, r.trigger, r.event_id, r.dry_run ? 1 : 0, JSON.stringify(r.definition), now.toISOString(), r.local_date);
+    return Number(info.lastInsertRowid);
+  }
+
+  /** Sets a run's status. Final statuses also stamp finished_at; `waiting`/`running` clear it. */
+  finishWorkflowRun(id: number, status: WorkflowRunStatus, error: string | null = null, now = new Date()): void {
+    const final = status !== "running" && status !== "waiting";
+    this.sql
+      .prepare("UPDATE workflow_runs SET status = ?, error = ?, finished_at = ? WHERE id = ?")
+      .run(status, error, final ? now.toISOString() : null, id);
+  }
+
+  getWorkflowRun(id: number): WorkflowRunRow | undefined {
+    const r = this.sql.prepare("SELECT * FROM workflow_runs WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+    return r ? toWorkflowRun(r) : undefined;
+  }
+
+  workflowRuns(opts: { workflow_id?: string; limit?: number } = {}): WorkflowRunRow[] {
+    const rows = opts.workflow_id
+      ? this.sql.prepare("SELECT * FROM workflow_runs WHERE workflow_id = ? ORDER BY id DESC LIMIT ?").all(opts.workflow_id, opts.limit ?? 50)
+      : this.sql.prepare("SELECT * FROM workflow_runs ORDER BY id DESC LIMIT ?").all(opts.limit ?? 50);
+    return (rows as Record<string, unknown>[]).map(toWorkflowRun);
+  }
+
+  /** Last real (not dry) run per workflow id, for list views. */
+  lastWorkflowRuns(): Record<string, WorkflowRunRow> {
+    const rows = this.sql
+      .prepare("SELECT * FROM workflow_runs WHERE id IN (SELECT MAX(id) FROM workflow_runs WHERE dry_run = 0 GROUP BY workflow_id)")
+      .all() as Record<string, unknown>[];
+    return Object.fromEntries(rows.map((r) => [r.workflow_id as string, toWorkflowRun(r)]));
+  }
+
+  startStep(s: { workflow_run_id: number; step_id: string; path: string; type: string; input?: unknown }, now = new Date()): number {
+    const info = this.sql
+      .prepare("INSERT INTO step_runs (workflow_run_id, step_id, path, type, status, input, started_at) VALUES (?, ?, ?, ?, 'running', ?, ?)")
+      .run(s.workflow_run_id, s.step_id, s.path, s.type, s.input === undefined ? null : JSON.stringify(s.input), now.toISOString());
+    return Number(info.lastInsertRowid);
+  }
+
+  finishStep(
+    id: number,
+    s: { status: StepRunStatus; output?: unknown; error?: string | null; run_id?: number | null; warnings?: string[]; input?: unknown },
+    now = new Date(),
+  ): void {
+    const final = s.status !== "running" && s.status !== "waiting";
+    this.sql
+      .prepare(
+        `UPDATE step_runs SET status = ?, output = COALESCE(?, output), error = ?, run_id = COALESCE(?, run_id),
+           warnings = COALESCE(?, warnings), input = COALESCE(?, input), finished_at = ? WHERE id = ?`,
+      )
+      .run(
+        s.status,
+        s.output === undefined ? null : JSON.stringify(s.output),
+        s.error ?? null,
+        s.run_id ?? null,
+        s.warnings?.length ? JSON.stringify(s.warnings) : null,
+        s.input === undefined ? null : JSON.stringify(s.input),
+        final ? now.toISOString() : null,
+        id,
+      );
+  }
+
+  stepRuns(workflowRunId: number): StepRunRow[] {
+    return (this.sql.prepare("SELECT * FROM step_runs WHERE workflow_run_id = ? ORDER BY id").all(workflowRunId) as Record<string, unknown>[]).map(
+      toStepRun,
+    );
+  }
+
+  /** Outputs of finished steps keyed by step id: the `steps.*` template context when a run resumes. */
+  stepOutputs(workflowRunId: number): Record<string, unknown> {
+    const rows = this.sql
+      .prepare("SELECT step_id, output FROM step_runs WHERE workflow_run_id = ? AND status IN ('ok', 'skipped') ORDER BY id")
+      .all(workflowRunId) as { step_id: string; output: string | null }[];
+    return Object.fromEntries(rows.map((r) => [r.step_id, parseJson(r.output)]));
+  }
+
+  /** The step run currently waiting in a workflow run, if any. */
+  waitingStep(workflowRunId: number): StepRunRow | undefined {
+    const r = this.sql
+      .prepare("SELECT * FROM step_runs WHERE workflow_run_id = ? AND status = 'waiting' ORDER BY id DESC LIMIT 1")
+      .get(workflowRunId) as Record<string, unknown> | undefined;
+    return r ? toStepRun(r) : undefined;
+  }
+
+  waitingRuns(): WorkflowRunRow[] {
+    return (this.sql.prepare("SELECT * FROM workflow_runs WHERE status = 'waiting' ORDER BY id").all() as Record<string, unknown>[]).map(toWorkflowRun);
+  }
+
+  /**
+   * After a restart nothing is mid-step any more: steps (and their runs) still marked `running` were
+   * cut off. Mark them failed so they are never run twice. Waiting runs keep their resume jobs.
+   */
+  markInterruptedSteps(now = new Date()): number {
+    const iso = now.toISOString();
+    return this.sql.transaction(() => {
+      const steps = this.sql
+        .prepare("UPDATE step_runs SET status = 'failed', error = 'interrupted by restart', finished_at = ? WHERE status = 'running'")
+        .run(iso).changes;
+      this.sql
+        .prepare("UPDATE workflow_runs SET status = 'failed', error = 'interrupted by restart', finished_at = ? WHERE status = 'running'")
+        .run(iso);
+      this.sql.prepare("UPDATE runs SET status = 'error', error = 'interrupted by restart', finished_at = ? WHERE status = 'running'").run(iso);
+      return steps;
+    })();
+  }
+
+  // Evaluations and activity --------------------------------------------------
+
+  recordEvaluation(e: Omit<EvaluationRow, "id">): number {
+    return Number(
+      this.sql
+        .prepare("INSERT INTO evaluations (at, workflow_id, trigger_kind, event_id, fired, reason, simulated) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        .run(e.at, e.workflow_id, e.trigger_kind, e.event_id, e.fired ? 1 : 0, e.reason, e.simulated ? 1 : 0).lastInsertRowid,
+    );
+  }
+
+  addActivity(kind: ActivityKind, subject: string | null, detail: unknown = null, now = new Date()): number {
+    return Number(
+      this.sql
+        .prepare("INSERT INTO activity (at, kind, subject, detail) VALUES (?, ?, ?, ?)")
+        .run(now.toISOString(), kind, subject, detail === null ? null : JSON.stringify(detail)).lastInsertRowid,
+    );
+  }
+
+  private feedWhere(q: FeedQuery, col: string, wfCol: string | null): { sql: string; args: unknown[] } {
+    const parts: string[] = [];
+    const args: unknown[] = [];
+    if (q.from) (parts.push(`${col} >= ?`), args.push(q.from));
+    if (q.to) (parts.push(`${col} <= ?`), args.push(q.to));
+    if (q.before) (parts.push(`${col} < ?`), args.push(q.before));
+    if (q.workflow_id && wfCol) (parts.push(`${wfCol} = ?`), args.push(q.workflow_id));
+    return { sql: parts.length ? `WHERE ${parts.join(" AND ")}` : "", args };
+  }
+
+  evaluations(q: FeedQuery & { fired?: boolean }): (EvaluationRow & { event_type: string | null })[] {
+    const w = this.feedWhere(q, "v.at", "v.workflow_id");
+    let where = w.sql;
+    if (q.fired !== undefined) where = `${where ? `${where} AND` : "WHERE"} v.fired = ${q.fired ? 1 : 0}`;
+    const rows = this.sql
+      .prepare(`SELECT v.*, e.type AS event_type FROM evaluations v LEFT JOIN events e ON e.id = v.event_id ${where} ORDER BY v.at DESC, v.id DESC LIMIT ?`)
+      .all(...w.args, q.limit) as Record<string, unknown>[];
+    return rows.map((r) => ({ ...(r as unknown as EvaluationRow & { event_type: string | null }), fired: r.fired === 1, simulated: r.simulated === 1 }));
+  }
+
+  activityRows(q: FeedQuery & { kinds?: string[] }): ActivityRow[] {
+    const w = this.feedWhere(q, "at", null);
+    let where = w.sql;
+    const args = [...w.args];
+    if (q.kinds?.length) {
+      where = `${where ? `${where} AND` : "WHERE"} kind IN (${q.kinds.map(() => "?").join(", ")})`;
+      args.push(...q.kinds);
+    }
+    if (q.workflow_id) return []; // activity rows are not tied to a workflow
+    const rows = this.sql.prepare(`SELECT * FROM activity ${where} ORDER BY at DESC, id DESC LIMIT ?`).all(...args, q.limit) as Record<string, unknown>[];
+    return rows.map((r) => ({ ...(r as unknown as ActivityRow), detail: parseJson(r.detail) }));
+  }
+
+  workflowRunsFeed(q: FeedQuery & { statuses?: string[] }): WorkflowRunRow[] {
+    const w = this.feedWhere(q, "started_at", "workflow_id");
+    let where = w.sql;
+    const args = [...w.args];
+    if (q.statuses?.length) {
+      where = `${where ? `${where} AND` : "WHERE"} status IN (${q.statuses.map(() => "?").join(", ")})`;
+      args.push(...q.statuses);
+    }
+    return (this.sql.prepare(`SELECT * FROM workflow_runs ${where} ORDER BY started_at DESC, id DESC LIMIT ?`).all(...args, q.limit) as Record<string, unknown>[]).map(
+      toWorkflowRun,
+    );
+  }
+
+  /** Token totals for runs created at or after `since`. */
+  tokensSince(since: string): { input_tokens: number; output_tokens: number; runs: number } {
+    return this.sql
+      .prepare("SELECT COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens, COUNT(*) AS runs FROM runs WHERE created_at >= ?")
+      .get(since) as { input_tokens: number; output_tokens: number; runs: number };
+  }
+
+  /** The most recent event from each paired device. */
+  lastEventPerDevice(): { device_id: number; name: string; last_event_type: string | null; last_event_at: string | null }[] {
+    return this.sql
+      .prepare(
+        `SELECT d.id AS device_id, d.name, e.type AS last_event_type, e.received_at AS last_event_at
+         FROM devices d LEFT JOIN events e ON e.id = (SELECT id FROM events WHERE device_id = d.id ORDER BY received_at DESC, id DESC LIMIT 1)
+         ORDER BY d.id`,
+      )
+      .all() as { device_id: number; name: string; last_event_type: string | null; last_event_at: string | null }[];
+  }
+
+  /**
+   * Retention: drops evaluations, activity, finished workflow runs (with their steps) and events
+   * older than `cutoff`. Claude runs are kept for token history (and because messages point at
+   * them) but their transcripts and inputs are cleared. Events still needed by a waiting run stay.
+   */
+  prune(cutoff: string): Record<string, number> {
+    return this.sql.transaction(() => {
+      const out: Record<string, number> = {};
+      out.evaluations = this.sql.prepare("DELETE FROM evaluations WHERE at < ?").run(cutoff).changes;
+      out.activity = this.sql.prepare("DELETE FROM activity WHERE at < ?").run(cutoff).changes;
+      out.step_runs = this.sql
+        .prepare("DELETE FROM step_runs WHERE workflow_run_id IN (SELECT id FROM workflow_runs WHERE finished_at IS NOT NULL AND finished_at < ?)")
+        .run(cutoff).changes;
+      out.workflow_runs = this.sql.prepare("DELETE FROM workflow_runs WHERE finished_at IS NOT NULL AND finished_at < ?").run(cutoff).changes;
+      out.events = this.sql
+        .prepare(
+          `DELETE FROM events WHERE received_at < ?
+             AND id NOT IN (SELECT event_id FROM workflow_runs WHERE event_id IS NOT NULL AND status IN ('running', 'waiting'))
+             AND id NOT IN (SELECT id FROM events e2 WHERE e2.id IN (SELECT MAX(id) FROM events GROUP BY type, device_id))`,
+        )
+        .run(cutoff).changes;
+      out.transcripts = this.sql
+        .prepare("UPDATE runs SET transcript = NULL, input = NULL WHERE created_at < ? AND (transcript IS NOT NULL OR input IS NOT NULL)")
+        .run(cutoff).changes;
+      out.jobs = this.sql.prepare("DELETE FROM jobs WHERE (done_at IS NOT NULL OR cancelled_at IS NOT NULL) AND run_at < ?").run(cutoff).changes;
+      return out;
+    })();
   }
 
   // Messages ----------------------------------------------------------------
@@ -237,6 +622,18 @@ export class Db {
     return rows.reverse().map((r) => ({ ...r, items: r.items ? (JSON.parse(r.items) as PlanItem[]) : null }));
   }
 
+  messagesForRun(runId: number): MessageRow[] {
+    const rows = this.sql.prepare("SELECT * FROM messages WHERE run_id = ? ORDER BY id").all(runId) as (Omit<MessageRow, "items"> & {
+      items: string | null;
+    })[];
+    return rows.map((r) => ({ ...r, items: r.items ? (JSON.parse(r.items) as PlanItem[]) : null }));
+  }
+
+  getMessage(id: number): MessageRow | undefined {
+    const r = this.sql.prepare("SELECT * FROM messages WHERE id = ?").get(id) as (Omit<MessageRow, "items"> & { items: string | null }) | undefined;
+    return r ? { ...r, items: r.items ? (JSON.parse(r.items) as PlanItem[]) : null } : undefined;
+  }
+
   // Jobs --------------------------------------------------------------------
 
   addJob(runAt: Date, kind: string, payload: Record<string, unknown>): number {
@@ -246,12 +643,12 @@ export class Db {
     return Number(info.lastInsertRowid);
   }
 
-  /** Atomically claims due jobs so a job never runs twice. */
+  /** Atomically claims due jobs so a job never runs twice. Cancelled jobs are never returned. */
   claimDueJobs(now = new Date()): Job[] {
     const iso = now.toISOString();
     return this.sql.transaction(() => {
       const rows = this.sql
-        .prepare("SELECT * FROM jobs WHERE done_at IS NULL AND run_at <= ? ORDER BY run_at")
+        .prepare("SELECT * FROM jobs WHERE done_at IS NULL AND cancelled_at IS NULL AND run_at <= ? ORDER BY run_at")
         .all(iso) as (Omit<Job, "payload"> & { payload: string })[];
       const mark = this.sql.prepare("UPDATE jobs SET done_at = ? WHERE id = ?");
       for (const r of rows) mark.run(iso, r.id);
@@ -264,5 +661,30 @@ export class Db {
     this.sql
       .prepare("UPDATE jobs SET done_at = ? WHERE done_at IS NULL AND json_extract(payload, '$.task_id') = ?")
       .run(now.toISOString(), taskId);
+  }
+
+  getJob(id: number): (Job & { done_at: string | null; cancelled_at: string | null }) | undefined {
+    const r = this.sql.prepare("SELECT * FROM jobs WHERE id = ?").get(id) as
+      | (Omit<Job, "payload"> & { payload: string; done_at: string | null; cancelled_at: string | null })
+      | undefined;
+    return r ? { ...r, payload: JSON.parse(r.payload) as Record<string, unknown> } : undefined;
+  }
+
+  /** Pending (not done, not cancelled) jobs, optionally of one kind. */
+  pendingJobs(kind?: string): Job[] {
+    const rows = (
+      kind
+        ? this.sql.prepare("SELECT * FROM jobs WHERE done_at IS NULL AND cancelled_at IS NULL AND kind = ? ORDER BY run_at").all(kind)
+        : this.sql.prepare("SELECT * FROM jobs WHERE done_at IS NULL AND cancelled_at IS NULL ORDER BY run_at").all()
+    ) as (Omit<Job, "payload"> & { payload: string })[];
+    return rows.map((r) => ({ ...r, payload: JSON.parse(r.payload) as Record<string, unknown> }));
+  }
+
+  /** Cancels a pending job. Returns false if it already ran or was cancelled. */
+  cancelJob(id: number, now = new Date()): boolean {
+    return (
+      this.sql.prepare("UPDATE jobs SET cancelled_at = ? WHERE id = ? AND done_at IS NULL AND cancelled_at IS NULL").run(now.toISOString(), id)
+        .changes > 0
+    );
   }
 }

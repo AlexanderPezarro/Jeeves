@@ -38,9 +38,37 @@ export function loadChores(path: string): Chore[] {
   return parsed.chores as Chore[];
 }
 
-/** Upsert every chore in the file; chores removed from the file are left as they are. */
-export function seedFromFile(store: TodoStore, path: string): number {
-  const chores = loadChores(path);
-  for (const c of chores) store.upsertChore(c);
-  return chores.length;
+export interface SeedResult {
+  inserted: number;
+  skipped: number;
+}
+
+/**
+ * Seed/import: insert the file's chores whose id the DB doesn't know yet. Once a chore is in the DB
+ * the DB owns it, so edits made in the chore manager are never overwritten, and chores deleted
+ * there are not brought back. Chores removed from the file are left as they are.
+ */
+export function seedFromFile(store: TodoStore, path: string): SeedResult {
+  const result: SeedResult = { inserted: 0, skipped: 0 };
+  for (const c of loadChores(path)) {
+    if (store.knowsChore(c.id)) {
+      result.skipped++;
+    } else {
+      store.upsertChore(c);
+      result.inserted++;
+    }
+  }
+  return result;
+}
+
+/** Lowercase-dash slug used as a chore id when none is given, e.g. "Wash the dishes!" -> "wash-the-dishes". */
+export function slugify(name: string): string {
+  return (
+    name
+      .normalize("NFKD")
+      .replace(/[̀-ͯ]/g, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "chore"
+  );
 }

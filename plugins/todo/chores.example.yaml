@@ -1,4 +1,8 @@
-# Copy to chores.yaml and edit. Chores are matched by id, so renaming an id creates a new chore.
+# Seed/import file. Copy to chores.yaml and edit before the first start; after that, manage chores
+# in the Chores page (Jeeves > Plugins > Chores). On start, and when you press "Import from
+# chores.yaml" there, only chores whose id is not already in the database are added: once a chore
+# is in the database it is never overwritten from this file, and chores deleted in the UI are not
+# brought back. Renaming an id here therefore adds a new chore.
 #
 # recurrence:
 #   { every: day }

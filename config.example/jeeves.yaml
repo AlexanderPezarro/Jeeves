@@ -1,0 +1,23 @@
+# Copy config.example/ to config/ and edit. The server watches this directory and reloads on save;
+# the web UI (/admin) edits the same files and keeps your comments.
+timezone: Europe/London
+
+# Claude settings. Effort trades depth for cost; "low" is plenty for chore planning.
+model: claude-opus-5-5
+effort: low
+max_runs_per_day: 20
+
+about_me: |
+  I work from home on weekdays and usually have a free hour after 18:00.
+  I'd rather do quick wins first.
+
+# How long the activity feed (evaluations, runs, events) is kept.
+activity_retention_days: 90
+
+# Plugins are separate services that speak MCP over HTTP. Per-plugin settings live in plugins/<name>.yaml.
+plugins:
+  - name: todo
+    url: http://todo:8081/mcp
+    token_env: TODO_PLUGIN_TOKEN
+
+# Workflows live in workflows/<id>.yaml, one per file.

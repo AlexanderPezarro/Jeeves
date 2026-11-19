@@ -1,24 +1,42 @@
 # Jeeves: control server + to-do plugin.
-# Put your settings in server/jeeves.yaml, plugins/todo/chores.yaml and .env (see the *.example files).
+# Put your settings in config/ (copy config.example/), plugins/todo/chores.yaml and .env (see the *.example files).
 services:
   server:
-    build: ./server
+    # Built from the repo root so the image also contains the web UI (web/ -> /admin).
+    build:
+      context: .
+      dockerfile: server/Dockerfile
     restart: unless-stopped
     env_file: .env
     environment:
       TZ: Europe/London
-      JEEVES_CONFIG: /config/jeeves.yaml
+      # config/ holds jeeves.yaml, workflows/ and plugins/. Mounted read-write: the server migrates
+      # old rules into workflows/ and the web UI edits these files. Must be writable by uid 1000.
+      JEEVES_CONFIG_DIR: /config
       JEEVES_DB_PATH: /data/jeeves.db
+      # "cli" (default) drives Claude through the Claude Code CLI login mounted below; "api" uses ANTHROPIC_API_KEY.
+      JEEVES_CLAUDE_BACKEND: ${JEEVES_CLAUDE_BACKEND:-cli}
+      # Web UI auth: trust Authelia's Remote-User on /admin/api, but only from Caddy's address
+      # (set JEEVES_TRUSTED_PROXY in .env). Off unless both are set.
+      JEEVES_TRUST_PROXY_AUTH: ${JEEVES_TRUST_PROXY_AUTH:-0}
+      JEEVES_TRUSTED_PROXY: ${JEEVES_TRUSTED_PROXY:-}
     volumes:
-      - ./server/jeeves.yaml:/config/jeeves.yaml:ro
+      - ./config:/config
       - jeeves-data:/data
-      # Uncomment to enable push, and set FIREBASE_SERVICE_ACCOUNT=/config/firebase.json in .env
-      # - ./firebase.json:/config/firebase.json:ro
+      # The host's Claude Code login (subscription credentials). Container user is uid 1000.
+      - ${CLAUDE_HOME:-~/.claude}:/home/node/.claude
+      # Uncomment to enable push, and set FIREBASE_SERVICE_ACCOUNT=/secrets/firebase.json in .env
+      # - ./firebase.json:/secrets/firebase.json:ro
     ports:
-      # Put this behind your Cloudflare tunnel or Tailscale; only the app needs to reach it.
-      - "8080:8080"
+      # Caddy reaches the server over proxy_network, so set JEEVES_BIND=127.0.0.1 in .env to keep
+      # this port off the LAN (recommended once the web UI is on, see docs/deploy.md).
+      - "${JEEVES_BIND:-0.0.0.0}:${JEEVES_PORT:-8080}:8080"
     depends_on:
       - todo
+    networks:
+      - default
+      # Caddy (~/projects/proxy) serves it at https://jeeves.alexanderpezarro.uk, Tailscale-only.
+      - proxy_network
 
   todo:
     build: ./plugins/todo
@@ -28,10 +46,18 @@ services:
       TODO_PLUGIN_TOKEN: ${TODO_PLUGIN_TOKEN}
       TODO_DB_PATH: /data/todo.db
       TODO_CHORES_FILE: /config/chores.yaml
+      # Task events (todo.task_started / todo.task_completed) go to <JEEVES_URL>/plugin-events.
+      JEEVES_URL: http://server:8080
     volumes:
+      # Seed/import only: new ids are added on start and by "Import from chores.yaml" on the Chores page.
+      # Chores already in todo.db are never overwritten from this file; edit them in the Chores page.
       - ./plugins/todo/chores.yaml:/config/chores.yaml:ro
       - todo-data:/data
     # Not published: only the server talks to the plugin, over the compose network.
+
+networks:
+  proxy_network:
+    external: true
 
 volumes:
   jeeves-data:

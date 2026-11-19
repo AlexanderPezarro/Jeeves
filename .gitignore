@@ -1,2 +1,5 @@
 .env
 firebase.json
+# Runtime state and live config (config.example/ is the committed template)
+data/
+config/

@@ -1,9 +1,10 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { Config } from "./config.js";
+import type { ConfigSource, ResolvedConfig } from "./config.js";
 import type { Db, PlanItem } from "./db.js";
 import type { Notifier } from "./notify.js";
-import { splitToolName, type PluginHost } from "./plugins.js";
+import { splitToolName, type PluginHost, type PluginTool } from "./plugins.js";
 import { localTime } from "./time.js";
+import type { CliRunner } from "./cli.js";
 
 type CreateParams = Anthropic.Beta.Messages.MessageCreateParamsNonStreaming;
 type Message = Anthropic.Beta.Messages.BetaMessage;
@@ -17,10 +18,13 @@ export function anthropicCreate(client = new Anthropic()): CreateMessage {
 
 export interface AgentDeps {
   db: Db;
-  config: Config;
+  config: ConfigSource;
   plugins: PluginHost;
   notifier: Notifier;
-  create: CreateMessage;
+  /** API path. Ignored when `cli` is set. */
+  create?: CreateMessage;
+  /** Claude Code CLI path: uses the CLI's logged-in account instead of an API key. */
+  cli?: CliRunner;
   now?: () => Date;
 }
 
@@ -30,17 +34,32 @@ export interface RunRequest {
   prompt: string;
   rule_id?: string;
   event_id?: number;
+  workflow_run_id?: number;
+  /** Allowlist of tool names (`<plugin>__<tool>`, `send_message`, `schedule_followup`). Absent = all. */
+  tools?: string[];
+  /** Record messages and follow-ups instead of sending them, and only offer read-only plugin tools. */
+  dryRun?: boolean;
+}
+
+/** What a dry run would have done. */
+export interface RecordedAction {
+  kind: "message" | "followup";
+  text: string;
+  items?: PlanItem[];
+  in_minutes?: number;
 }
 
 export interface RunResult {
   runId: number | null;
   status: "ok" | "error" | "refused" | "capped";
   messagesSent: number;
+  error?: string;
+  recorded?: RecordedAction[];
 }
 
 const MAX_TURNS = 12;
 
-const BUILTIN_TOOLS: Anthropic.Beta.Messages.BetaTool[] = [
+export const BUILTIN_TOOLS: Anthropic.Beta.Messages.BetaTool[] = [
   {
     name: "send_message",
     description:
@@ -87,7 +106,7 @@ const BUILTIN_TOOLS: Anthropic.Beta.Messages.BetaTool[] = [
   },
 ];
 
-function systemPrompt(config: Config, kind: RunRequest["kind"]): string {
+function systemPrompt(config: ResolvedConfig, kind: RunRequest["kind"]): string {
   const common = [
     "You are Jeeves, Alexander's household assistant. You help him get through chores and goals",
     "with as little friction as possible. You talk to him through notifications on his phone, so",
@@ -113,6 +132,14 @@ function systemPrompt(config: Config, kind: RunRequest["kind"]): string {
   return [...common, ...(kind === "plan" ? plan : reply), ...about].join("\n");
 }
 
+/** Per-run state: which tools are allowed and, in a dry run, what would have been sent. */
+interface RunScope {
+  runId: number;
+  dryRun: boolean;
+  allowed: Set<string>;
+  recorded: RecordedAction[];
+}
+
 /**
  * Runs one Claude conversation with plugin tools plus the built-in messaging tools.
  * Everything Claude does reaches the phone only through send_message, so a malformed
@@ -125,8 +152,28 @@ export class Agent {
     this.now = deps.now ?? (() => new Date());
   }
 
+  private get config(): ResolvedConfig {
+    return this.deps.config.current;
+  }
+
+  /** Tools offered to Claude for this request: builtins plus plugin tools, filtered by allowlist and dry run. */
+  toolsFor(pluginTools: PluginTool[], req: Pick<RunRequest, "tools" | "dryRun">): Anthropic.Beta.Messages.BetaTool[] {
+    const allow = req.tools ? new Set(req.tools) : null;
+    return [
+      ...BUILTIN_TOOLS,
+      ...pluginTools
+        .filter((t) => !req.dryRun || t.read_only)
+        .map((t) => ({
+          name: t.name,
+          description: t.description,
+          input_schema: t.input_schema as Anthropic.Beta.Messages.BetaTool.InputSchema,
+        })),
+    ].filter((t) => !allow || allow.has(t.name));
+  }
+
   async run(req: RunRequest): Promise<RunResult> {
-    const { db, config, plugins, create } = this.deps;
+    const { db, plugins, create } = this.deps;
+    const config = this.config;
     const local = localTime(this.now(), config.timezone);
 
     if (db.runsOn(local.date) >= config.max_runs_per_day) {
@@ -134,15 +181,7 @@ export class Agent {
       return { runId: null, status: "capped", messagesSent: 0 };
     }
 
-    const pluginTools = await plugins.listTools();
-    const tools: Anthropic.Beta.Messages.BetaTool[] = [
-      ...BUILTIN_TOOLS,
-      ...pluginTools.map((t) => ({
-        name: t.name,
-        description: t.description,
-        input_schema: t.input_schema as Anthropic.Beta.Messages.BetaTool.InputSchema,
-      })),
-    ];
+    const tools = this.toolsFor(await plugins.listTools(), req);
 
     const context = `It is ${local.weekday} ${local.date}, ${local.time} (${config.timezone}).`;
     const history =
@@ -158,10 +197,16 @@ export class Agent {
       kind: req.kind,
       rule_id: req.rule_id,
       event_id: req.event_id,
+      workflow_run_id: req.workflow_run_id,
       model: config.model,
       input: userText,
       local_date: local.date,
     });
+    const scope: RunScope = { runId, dryRun: !!req.dryRun, allowed: new Set(tools.map((t) => t.name)), recorded: [] };
+    const withRecorded = (r: RunResult): RunResult => (scope.dryRun ? { ...r, recorded: scope.recorded } : r);
+
+    if (this.deps.cli) return withRecorded(await this.runCli(req, scope, userText, tools));
+    if (!create) throw new Error("Agent has neither an API client nor a CLI runner");
 
     const messages: Anthropic.Beta.Messages.BetaMessageParam[] = [{ role: "user", content: userText }];
     let inputTokens = 0;
@@ -186,7 +231,7 @@ export class Agent {
 
         if (res.stop_reason === "refusal") {
           db.finishRun(runId, { status: "refused", transcript: messages, input_tokens: inputTokens, output_tokens: outputTokens });
-          return { runId, status: "refused", messagesSent: sent };
+          return withRecorded({ runId, status: "refused", messagesSent: sent });
         }
         if (res.stop_reason === "pause_turn") continue;
         if (res.stop_reason !== "tool_use") break;
@@ -194,7 +239,7 @@ export class Agent {
         const results: Anthropic.Beta.Messages.BetaToolResultBlockParam[] = [];
         for (const block of res.content) {
           if (block.type !== "tool_use") continue;
-          const out = await this.callTool(block.name, block.input as Record<string, unknown>, runId);
+          const out = await this.callTool(block.name, block.input as Record<string, unknown>, scope);
           if (block.name === "send_message" && !out.isError) sent++;
           results.push({ type: "tool_result", tool_use_id: block.id, content: out.text, is_error: out.isError });
         }
@@ -213,13 +258,13 @@ export class Agent {
                 .trim()
             : "";
         if (text) {
-          await this.sendMessage(text, [], runId);
+          await this.deliver(text, [], scope);
           sent++;
         }
       }
 
       db.finishRun(runId, { status: "ok", transcript: messages, input_tokens: inputTokens, output_tokens: outputTokens });
-      return { runId, status: "ok", messagesSent: sent };
+      return withRecorded({ runId, status: "ok", messagesSent: sent });
     } catch (e) {
       db.finishRun(runId, {
         status: "error",
@@ -232,27 +277,84 @@ export class Agent {
     }
   }
 
-  private async callTool(name: string, input: Record<string, unknown>, runId: number) {
+  private async runCli(req: RunRequest, scope: RunScope, userText: string, tools: Anthropic.Beta.Messages.BetaTool[]): Promise<RunResult> {
+    const { db } = this.deps;
+    const config = this.config;
+    const runId = scope.runId;
+    let sent = 0;
+    let out;
+    try {
+      out = await this.deps.cli!({
+        model: config.model,
+        effort: config.effort as "low",
+        system: systemPrompt(config, req.kind),
+        prompt: userText,
+        maxTurns: MAX_TURNS,
+        tools: tools.map((t) => ({
+          name: t.name,
+          description: t.description ?? "",
+          input_schema: t.input_schema as Record<string, unknown>,
+        })),
+        callTool: async (name, input) => {
+          const res = await this.callTool(name, input, scope);
+          if (name === "send_message" && !res.isError) sent++;
+          return res;
+        },
+      });
+    } catch (e) {
+      db.finishRun(runId, { status: "error", transcript: [], input_tokens: 0, output_tokens: 0, error: (e as Error).message });
+      throw e;
+    }
+    if (sent === 0 && out.finalText && !out.error) {
+      await this.deliver(out.finalText, [], scope);
+      sent++;
+    }
+    const status = out.error ? "error" : "ok";
+    db.finishRun(runId, {
+      status,
+      transcript: out.transcript,
+      input_tokens: out.inputTokens,
+      output_tokens: out.outputTokens,
+      ...(out.error ? { error: out.error } : {}),
+    });
+    if (out.error) console.warn(`Claude CLI run ${runId} failed: ${out.error}`);
+    return { runId, status, messagesSent: sent, ...(out.error ? { error: out.error } : {}) };
+  }
+
+  private async callTool(name: string, input: Record<string, unknown>, scope: RunScope) {
+    if (!scope.allowed.has(name)) return { text: `Tool ${name} is not available in this run`, isError: true };
     if (name === "send_message") {
-      const items = (input.items as (PlanItem & { task_id: number | null; minutes: number | null })[]).map((i) => ({
+      const items = ((input.items ?? []) as (PlanItem & { task_id: number | null; minutes: number | null })[]).map((i) => ({
         title: i.title,
         steps: i.steps,
-        ...(i.task_id !== null ? { task_id: i.task_id } : {}),
-        ...(i.minutes !== null ? { minutes: i.minutes } : {}),
+        ...(i.task_id !== null && i.task_id !== undefined ? { task_id: i.task_id } : {}),
+        ...(i.minutes !== null && i.minutes !== undefined ? { minutes: i.minutes } : {}),
       }));
-      await this.sendMessage(String(input.text), items, runId);
-      return { text: "Sent.", isError: false };
+      await this.deliver(String(input.text), items, scope);
+      return { text: scope.dryRun ? "Sent (dry run: recorded, not delivered)." : "Sent.", isError: false };
     }
     if (name === "schedule_followup") {
       const at = new Date(this.now().getTime() + Number(input.in_minutes) * 60_000);
-      this.deps.db.addJob(at, "followup", { message: input.message, task_id: input.task_id });
+      if (scope.dryRun) {
+        scope.recorded.push({ kind: "followup", text: String(input.message), in_minutes: Number(input.in_minutes) });
+      } else {
+        this.deps.db.addJob(at, "followup", { message: input.message, task_id: input.task_id });
+      }
       return { text: `Scheduled for ${at.toISOString()}.`, isError: false };
     }
     const target = splitToolName(name);
     if (!target) return { text: `Unknown tool ${name}`, isError: true };
     const res = await this.deps.plugins.call(target.plugin, target.tool, input);
-    if (!res.isError && target.tool === "start_task") scheduleFollowups(this.deps.db, res.text);
+    if (!res.isError && !scope.dryRun && target.tool === "start_task") scheduleFollowups(this.deps.db, res.text);
     return res;
+  }
+
+  private async deliver(text: string, items: PlanItem[], scope: RunScope) {
+    if (scope.dryRun) {
+      scope.recorded.push({ kind: "message", text, ...(items.length ? { items } : {}) });
+      return;
+    }
+    await this.sendMessage(text, items, scope.runId);
   }
 
   async sendMessage(text: string, items: PlanItem[], runId: number | null = null) {

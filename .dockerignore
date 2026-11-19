@@ -1,0 +1,16 @@
+# The server image is built from the repo root (server/Dockerfile). Keep the context small and
+# free of runtime state and secrets. (plugins/todo builds from its own folder and .dockerignore.)
+.git
+.github
+.env
+firebase.json
+android
+data
+config
+**/node_modules
+**/dist
+web/test-results
+web/playwright-report
+server/data
+server/jeeves.yaml
+plugins

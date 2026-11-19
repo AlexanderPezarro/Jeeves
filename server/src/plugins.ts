@@ -1,6 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { PluginConfig } from "./config.js";
+import { manifestSchema, pluginBase, resolveSecrets, type Manifest } from "./manifest.js";
 
 export interface PluginTool {
   /** Name exposed to Claude: `<plugin>__<tool>`. */
@@ -9,6 +10,8 @@ export interface PluginTool {
   tool: string;
   description: string;
   input_schema: Record<string, unknown>;
+  /** From the MCP tool annotations (readOnlyHint). Dry runs only call read-only tools. */
+  read_only: boolean;
 }
 
 export interface ToolResult {
@@ -16,10 +19,20 @@ export interface ToolResult {
   isError: boolean;
 }
 
+export interface PluginStatus {
+  name: string;
+  url: string;
+  reachable: boolean | null;
+  tool_count: number;
+  last_error: string | null;
+  last_seen: string | null;
+}
+
 /** Anything that can list and call plugin tools. Tests swap in a fake. */
 export interface PluginHost {
   listTools(): Promise<PluginTool[]>;
   call(plugin: string, tool: string, args: Record<string, unknown>): Promise<ToolResult>;
+  status?(): PluginStatus[];
 }
 
 const SEP = "__";
@@ -29,22 +42,178 @@ export function splitToolName(name: string): { plugin: string; tool: string } | 
   return i > 0 ? { plugin: name.slice(0, i), tool: name.slice(i + SEP.length) } : null;
 }
 
+export interface PluginHostOptions {
+  env?: NodeJS.ProcessEnv;
+  /** Called on the first contact and whenever a plugin flips between reachable and unreachable. */
+  onStatusChange?: (name: string, reachable: boolean, status: PluginStatus) => void;
+  /** Called after each manifest fetch (null = tools-only). */
+  onManifest?: (name: string, manifest: Manifest | null) => void;
+  /** Stored settings values for a plugin (config/plugins/<name>.yaml), pushed on every (re)connect. */
+  settingsFor?: (name: string) => Record<string, unknown> | undefined;
+  fetch?: typeof fetch;
+  now?: () => Date;
+}
+
 /**
  * Talks to plugins over MCP (Streamable HTTP). Each plugin is a separate service, so a plugin
  * that is down only removes its own tools; the rest keep working.
  */
 export class McpPluginHost implements PluginHost {
   private clients = new Map<string, Client>();
+  private statuses = new Map<string, PluginStatus>();
+  private manifests = new Map<string, Manifest | null>();
+  private background = new Set<Promise<unknown>>();
+  protected readonly env: NodeJS.ProcessEnv;
+  private readonly now: () => Date;
+  private readonly fetch: typeof fetch;
 
   constructor(
-    private readonly plugins: PluginConfig[],
-    private readonly env: NodeJS.ProcessEnv = process.env,
-  ) {}
+    protected plugins: PluginConfig[],
+    protected readonly opts: PluginHostOptions = {},
+  ) {
+    this.env = opts.env ?? process.env;
+    this.now = opts.now ?? (() => new Date());
+    this.fetch = opts.fetch ?? ((...a) => fetch(...a));
+  }
+
+  /** Swaps the plugin list after a config reload; clients for removed or changed plugins are dropped. */
+  setPlugins(plugins: PluginConfig[]) {
+    for (const [name, client] of this.clients) {
+      const before = this.plugins.find((p) => p.name === name);
+      const after = plugins.find((p) => p.name === name);
+      if (!after || JSON.stringify(before) !== JSON.stringify(after)) {
+        void client.close().catch(() => {});
+        this.clients.delete(name);
+      }
+    }
+    for (const name of [...this.statuses.keys()]) {
+      const before = this.plugins.find((p) => p.name === name);
+      const after = plugins.find((p) => p.name === name);
+      if (!after || JSON.stringify(before) !== JSON.stringify(after)) {
+        this.statuses.delete(name); // next contact counts as a (re)connect
+        this.manifests.delete(name);
+      }
+    }
+    this.plugins = plugins;
+  }
+
+  pluginConfig(name: string): PluginConfig | undefined {
+    return this.plugins.find((p) => p.name === name);
+  }
+
+  token(name: string): string | undefined {
+    const cfg = this.pluginConfig(name);
+    return cfg ? this.env[cfg.token_env] : undefined;
+  }
+
+  status(): PluginStatus[] {
+    return this.plugins.map(
+      (p) => this.statuses.get(p.name) ?? { name: p.name, url: p.url, reachable: null, tool_count: 0, last_error: null, last_seen: null },
+    );
+  }
+
+  /** Records a contact outcome. Subclasses hook here to react to (re)connects. */
+  protected markStatus(name: string, ok: boolean, info: { tool_count?: number; error?: string } = {}) {
+    const cfg = this.pluginConfig(name);
+    if (!cfg) return;
+    const prev = this.statuses.get(name);
+    const next: PluginStatus = {
+      name,
+      url: cfg.url,
+      reachable: ok,
+      tool_count: info.tool_count ?? prev?.tool_count ?? 0,
+      last_error: ok ? null : (info.error ?? "unreachable"),
+      last_seen: ok ? this.now().toISOString() : (prev?.last_seen ?? null),
+    };
+    if (!ok) next.tool_count = 0;
+    this.statuses.set(name, next);
+    if (prev?.reachable !== ok) {
+      this.opts.onStatusChange?.(name, ok, next);
+      if (ok) this.onConnect(name);
+    }
+  }
+
+  // Manifest and settings ----------------------------------------------------
+
+  baseUrl(name: string): string | undefined {
+    const cfg = this.pluginConfig(name);
+    return cfg ? pluginBase(cfg.url) : undefined;
+  }
+
+  /** The cached manifest (null = tools-only plugin, undefined = not fetched yet). */
+  manifest(name: string): Manifest | null | undefined {
+    return this.manifests.get(name);
+  }
+
+  /** `<plugin>.<event>` for every event a plugin's manifest declares. */
+  manifestEvents(): string[] {
+    return this.plugins.flatMap((p) => (this.manifests.get(p.name)?.events ?? []).map((e) => `${p.name}.${e}`));
+  }
+
+  /** The first configured plugin whose manifest says `today: true`. */
+  todayPlugin(): string | null {
+    return this.plugins.find((p) => this.manifests.get(p.name)?.today)?.name ?? null;
+  }
+
+  /** Fetches and caches `GET <base>/jeeves/manifest`. A 404 or invalid manifest means tools-only. */
+  async refreshManifest(name: string): Promise<Manifest | null> {
+    const base = this.baseUrl(name);
+    const token = this.token(name);
+    if (!base || !token) return null;
+    let manifest: Manifest | null = null;
+    try {
+      const res = await this.fetch(`${base}/jeeves/manifest`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5000) });
+      if (res.ok) {
+        const parsed = manifestSchema.safeParse(await res.json());
+        if (parsed.success) manifest = parsed.data;
+        else console.warn(`Plugin ${name}: invalid manifest, treating it as tools-only: ${parsed.error.message}`);
+      }
+    } catch (e) {
+      console.warn(`Plugin ${name}: manifest fetch failed: ${(e as Error).message}`);
+      if (this.manifests.has(name)) return this.manifests.get(name) ?? null; // keep the last one on a blip
+    }
+    this.manifests.set(name, manifest);
+    this.opts.onManifest?.(name, manifest);
+    return manifest;
+  }
+
+  /**
+   * Pushes the plugin's stored settings (secrets resolved from the environment) to
+   * `PUT <base>/jeeves/settings`. Throws with the plugin's answer when it refuses.
+   */
+  async pushSettings(name: string, values?: Record<string, unknown>): Promise<void> {
+    const manifest = this.manifests.get(name) ?? (await this.refreshManifest(name));
+    if (!manifest?.settings_schema) return;
+    const stored = values ?? this.opts.settingsFor?.(name) ?? {};
+    const { values: resolved, missing } = resolveSecrets(manifest.settings_schema, stored, this.env);
+    if (missing.length) console.warn(`Plugin ${name}: environment variable(s) ${missing.join(", ")} not set; leaving those settings out`);
+    const res = await this.fetch(`${this.baseUrl(name)}/jeeves/settings`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${this.token(name)}`, "Content-Type": "application/json" },
+      body: JSON.stringify(resolved),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) throw new Error(`plugin answered ${res.status}: ${(await res.text()).slice(0, 500)}`);
+  }
+
+  /** On every (re)connect: refresh the manifest and re-push settings, so a restarted plugin gets them back. */
+  protected onConnect(name: string): void {
+    const work = this.refreshManifest(name)
+      .then(() => this.pushSettings(name))
+      .catch((e) => console.warn(`Plugin ${name}: settings push failed: ${(e as Error).message}`));
+    this.background.add(work);
+    void work.finally(() => this.background.delete(work));
+  }
+
+  /** Waits for manifest/settings work started by reconnects; used by tests. */
+  async idle() {
+    while (this.background.size) await Promise.allSettled([...this.background]);
+  }
 
   private async client(name: string): Promise<Client> {
     const existing = this.clients.get(name);
     if (existing) return existing;
-    const cfg = this.plugins.find((p) => p.name === name);
+    const cfg = this.pluginConfig(name);
     if (!cfg) throw new Error(`Unknown plugin: ${name}`);
     const token = this.env[cfg.token_env];
     if (!token) throw new Error(`Plugin ${name}: environment variable ${cfg.token_env} is not set`);
@@ -70,10 +239,13 @@ export class McpPluginHost implements PluginHost {
             tool: t.name,
             description: t.description ?? "",
             input_schema: t.inputSchema as Record<string, unknown>,
+            read_only: t.annotations?.readOnlyHint === true,
           });
         }
+        this.markStatus(p.name, true, { tool_count: tools.length });
       } catch (e) {
         this.clients.delete(p.name);
+        this.markStatus(p.name, false, { error: (e as Error).message });
         console.warn(`Plugin ${p.name} unavailable: ${(e as Error).message}`);
       }
     }
@@ -87,9 +259,11 @@ export class McpPluginHost implements PluginHost {
         .filter((c) => c.type === "text")
         .map((c) => c.text)
         .join("\n");
+      this.markStatus(plugin, true);
       return { text, isError: res.isError === true };
     } catch (e) {
       this.clients.delete(plugin);
+      this.markStatus(plugin, false, { error: (e as Error).message });
       return { text: `Plugin ${plugin} failed: ${(e as Error).message}`, isError: true };
     }
   }

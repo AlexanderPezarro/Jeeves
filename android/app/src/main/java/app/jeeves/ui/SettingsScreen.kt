@@ -5,15 +5,20 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -26,6 +31,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -38,7 +44,13 @@ import app.jeeves.WifiTrigger
 import kotlinx.coroutines.launch
 
 @Composable
-fun SettingsScreen(prefs: Prefs, modifier: Modifier = Modifier, onPaired: () -> Unit) {
+fun SettingsScreen(
+    prefs: Prefs,
+    modifier: Modifier = Modifier,
+    onPaired: () -> Unit,
+    onOpenWorkflows: () -> Unit = {},
+    onOpenPlugins: () -> Unit = {},
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var serverUrl by remember { mutableStateOf(prefs.serverUrl.ifBlank { "https://" }) }
@@ -88,6 +100,13 @@ fun SettingsScreen(prefs: Prefs, modifier: Modifier = Modifier, onPaired: () -> 
             },
         ) { Text(if (prefs.isPaired) "Pair again" else "Pair this phone") }
 
+        if (prefs.isPaired) {
+            HorizontalDivider()
+            Text("Automation", style = MaterialTheme.typography.titleMedium)
+            NavRow("Workflows", "Turn workflows on or off, run them now", onOpenWorkflows)
+            NavRow("Plugins", "Plugin status, settings and pages", onOpenPlugins)
+        }
+
         HorizontalDivider()
         Text("Home Wi-Fi", style = MaterialTheme.typography.titleMedium)
         Text(
@@ -125,6 +144,20 @@ fun SettingsScreen(prefs: Prefs, modifier: Modifier = Modifier, onPaired: () -> 
         }
 
         status?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+    }
+}
+
+@Composable
+private fun NavRow(title: String, subtitle: String, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null)
     }
 }
 
