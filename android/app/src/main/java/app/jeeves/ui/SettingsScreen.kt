@@ -224,6 +224,9 @@ fun SettingsScreen(
         ) { Text("Loud reminders can bypass Do Not Disturb") }
         }
 
+        HorizontalDivider()
+        AppUpdateSection()
+
         status?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
     }
 }
