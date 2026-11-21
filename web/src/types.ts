@@ -137,7 +137,7 @@ export interface Evaluation {
 }
 
 export interface ActivityRow {
-  kind: "config_reload" | "config_error" | "plugin_connect" | "plugin_disconnect";
+  kind: "config_reload" | "config_error" | "plugin_connect" | "plugin_disconnect" | "reminder_fired";
   at: string;
   id: number;
   subject: string | null;
@@ -162,7 +162,8 @@ export type UpcomingStatus = "will_run" | "will_skip" | "disabled" | "cap_reache
 export type UpcomingItem =
   | { kind: "schedule"; at: string; workflow_id: string; schedule: string; status: UpcomingStatus; reason: string | null }
   | { kind: "wait"; at: string; job_id: number; workflow_id: string; workflow_run_id: number; next_step: string | null; dry_run: boolean }
-  | { kind: "followup"; at: string; job_id: number; message: string; task_id: number | null };
+  | { kind: "followup"; at: string; job_id: number; message: string; task_id: number | null }
+  | { kind: "reminder"; at: string; job_id: number; plugin: string; key: string; level: string; text: string; task_id: number | null };
 
 export interface Upcoming {
   from: string;

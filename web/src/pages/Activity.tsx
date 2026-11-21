@@ -10,6 +10,7 @@ const KINDS = [
   { key: "evaluation", label: "Trigger checks" },
   { key: "config", label: "Config" },
   { key: "plugin", label: "Plugins" },
+  { key: "reminder", label: "Reminders" },
 ];
 const STATUSES = ["ok", "failed", "waiting", "running", "stopped", "capped", "cancelled", "fired", "skipped"];
 
@@ -175,6 +176,7 @@ function FeedRow({ item }: { item: FeedItem }) {
         config_error: "Config error",
         plugin_connect: "Plugin connected",
         plugin_disconnect: "Plugin disconnected",
+        reminder_fired: "Reminder fired",
       };
       const bad = item.kind === "config_error" || item.kind === "plugin_disconnect";
       summary = (
