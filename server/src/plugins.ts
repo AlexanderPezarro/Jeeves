@@ -1,7 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { PluginConfig } from "./config.js";
-import { manifestSchema, pluginBase, resolveSecrets, type Manifest } from "./manifest.js";
+import { manifestSchema, pluginBase, resolveSecrets, type EventInfo, type Manifest } from "./manifest.js";
 
 export interface PluginTool {
   /** Name exposed to Claude: `<plugin>__<tool>`. */
@@ -12,6 +12,12 @@ export interface PluginTool {
   input_schema: Record<string, unknown>;
   /** From the MCP tool annotations (readOnlyHint). Dry runs only call read-only tools. */
   read_only: boolean;
+  /** For the workflow editor: the manifest's `steps.<tool>.title`, else the MCP tool title. */
+  title: string | null;
+  /** JSON Schema of the tool's result (manifest `steps.<tool>.output_schema`, else MCP outputSchema). */
+  output_schema: Record<string, unknown> | null;
+  /** The plugin's display name from its manifest, else its configured name. */
+  plugin_title: string;
 }
 
 export interface ToolResult {
@@ -147,7 +153,12 @@ export class McpPluginHost implements PluginHost {
 
   /** `<plugin>.<event>` for every event a plugin's manifest declares. */
   manifestEvents(): string[] {
-    return this.plugins.flatMap((p) => (this.manifests.get(p.name)?.events ?? []).map((e) => `${p.name}.${e}`));
+    return this.manifestEventInfo().map((e) => e.type);
+  }
+
+  /** Every event the plugins' manifests declare, typed `<plugin>.<event>`, with their descriptions. */
+  manifestEventInfo(): (EventInfo & { source: string })[] {
+    return this.plugins.flatMap((p) => (this.manifests.get(p.name)?.event_info ?? []).map((e) => ({ ...e, type: `${p.name}.${e.type}`, source: p.name })));
   }
 
   /** The first configured plugin whose manifest says `today: true`. */
@@ -232,7 +243,9 @@ export class McpPluginHost implements PluginHost {
     for (const p of this.plugins) {
       try {
         const { tools } = await (await this.client(p.name)).listTools();
+        const manifest = this.manifests.get(p.name);
         for (const t of tools) {
+          const step = manifest?.steps[t.name];
           all.push({
             name: `${p.name}${SEP}${t.name}`,
             plugin: p.name,
@@ -240,6 +253,9 @@ export class McpPluginHost implements PluginHost {
             description: t.description ?? "",
             input_schema: t.inputSchema as Record<string, unknown>,
             read_only: t.annotations?.readOnlyHint === true,
+            title: step?.title ?? t.title ?? t.annotations?.title ?? null,
+            output_schema: step?.output_schema ?? (t.outputSchema as Record<string, unknown> | undefined) ?? null,
+            plugin_title: manifest?.display_name ?? p.name,
           });
         }
         this.markStatus(p.name, true, { tool_count: tools.length });

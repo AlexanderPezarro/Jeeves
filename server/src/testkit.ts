@@ -46,6 +46,9 @@ export class FakeTodo implements PluginHost {
       description: tool,
       input_schema: { type: "object", properties: tool === "list_due_tasks" ? {} : { task_id: { type: "integer" } } },
       read_only: READ_ONLY.has(tool),
+      title: null,
+      output_schema: null,
+      plugin_title: "Chores",
     }));
   }
   async call(plugin: string, tool: string, args: Record<string, unknown>): Promise<ToolResult> {

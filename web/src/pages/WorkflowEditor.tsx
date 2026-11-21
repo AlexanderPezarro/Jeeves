@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parseDocument } from "yaml";
 import { api, ApiError, StaleError, ValidationError } from "../api";
-import { collectStepIds, EditorDataContext, type EditorData } from "../editor/context";
+import { collectFieldPaths, collectStepIds, EditorDataContext, FIELD_PATHS_LIST, type EditorData } from "../editor/context";
 import { SimulatePanel } from "../editor/Simulate";
 import { StepList } from "../editor/Steps";
 import { TriggersEditor } from "../editor/Triggers";
@@ -41,7 +41,7 @@ export function WorkflowEditorPage({ id, isNew }: { id: string; isNew: boolean }
   const [notice, setNotice] = useState<string | null>(null);
   const [exists, setExists] = useState(!isNew);
 
-  const [data, setData] = useState<Omit<EditorData, "allStepIds">>({ tools: [], toolsError: null, eventTypes: [], timezone: "UTC" });
+  const [data, setData] = useState<Omit<EditorData, "allStepIds" | "fieldPaths">>({ tools: [], toolsError: null, eventTypes: [], events: [], timezone: "UTC" });
 
   /** Takes a file as it is on disk as the new baseline. */
   const init = useCallback(
@@ -98,7 +98,7 @@ export function WorkflowEditorPage({ id, isNew }: { id: string; isNew: boolean }
       .catch((e) => setData((d) => ({ ...d, toolsError: errorText(e) })));
     api
       .eventTypes()
-      .then((r) => setData((d) => ({ ...d, eventTypes: r.event_types })))
+      .then((r) => setData((d) => ({ ...d, eventTypes: r.event_types, events: r.events ?? [] })))
       .catch(() => {});
     api
       .globals()
@@ -192,7 +192,14 @@ export function WorkflowEditorPage({ id, isNew }: { id: string; isNew: boolean }
     return d.errors.length ? d.errors.map((e) => e.message).join("; ") : null;
   }, [tab, yamlDraft]);
 
-  const editorData: EditorData = useMemo(() => ({ ...data, allStepIds: collectStepIds(draft.steps) }), [data, draft.steps]);
+  const editorData: EditorData = useMemo(
+    () => ({
+      ...data,
+      allStepIds: collectStepIds(draft.steps),
+      fieldPaths: collectFieldPaths(draft.triggers, draft.steps, data.tools, data.events),
+    }),
+    [data, draft.steps, draft.triggers],
+  );
 
   if (loading) return <Spinner />;
   if (loadErr)
@@ -359,6 +366,11 @@ export function WorkflowEditorPage({ id, isNew }: { id: string; isNew: boolean }
           />
         )}
       </IssueProvider>
+      <datalist id={FIELD_PATHS_LIST}>
+        {editorData.fieldPaths.map((p) => (
+          <option key={p} value={p} />
+        ))}
+      </datalist>
     </EditorDataContext.Provider>
   );
 }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { CondExpr, Condition, Path } from "../types";
 import { FieldIssues } from "../ui";
+import { FIELD_PATHS_LIST } from "./context";
 
 const OPS = ["eq", "ne", "gt", "gte", "lt", "lte", "contains", "exists"] as const;
 type Op = (typeof OPS)[number];
@@ -42,7 +43,7 @@ export function ConditionRow({ value, onChange, onRemove, path, pathPrefix = "ev
   return (
     <div className="cond">
       <div className="row gap wrap">
-        <input aria-label="Condition path" className="mono grow" placeholder={`${pathPrefix}field`} value={value.path ?? ""} onChange={(e) => onChange({ ...value, path: e.target.value })} />
+        <input aria-label="Condition path" className="mono grow" list={FIELD_PATHS_LIST} placeholder={`${pathPrefix}field`} value={value.path ?? ""} onChange={(e) => onChange({ ...value, path: e.target.value })} />
         <select aria-label="Operator" value={op} onChange={(e) => rebuild(e.target.value as Op, e.target.value === "exists" ? true : parseValue(e.target.value as Op, text))}>
           {OPS.map((o) => (
             <option key={o} value={o}>

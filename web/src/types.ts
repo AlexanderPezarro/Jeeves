@@ -208,6 +208,22 @@ export interface Tool {
   description: string;
   input_schema: JsonSchema;
   read_only: boolean;
+  /** Friendly step name from the plugin (manifest or MCP title). */
+  title?: string | null;
+  /** What the tool returns; its fields are offered as `steps.<id>.<field>`. */
+  output_schema?: JsonSchema | null;
+  /** The plugin's display name. */
+  plugin_title?: string;
+}
+
+/** An event a trigger can wait for, with what its payload holds (`event.<field>`). */
+export interface EventInfo {
+  type: string;
+  title: string | null;
+  description: string | null;
+  payload_schema: JsonSchema | null;
+  /** "builtin" or the plugin's name. */
+  source: string;
 }
 
 export interface JsonSchema {

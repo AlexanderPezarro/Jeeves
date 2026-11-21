@@ -6,17 +6,55 @@ import { z } from "zod";
  * a UI page, the events the plugin posts to /plugin-events, and whether it serves the Today list.
  * A plugin without one (404 or invalid) is a tools-only plugin and still works.
  */
-export const manifestSchema = z.object({
-  name: z.string(),
-  display_name: z.string(),
-  version: z.string(),
-  settings_schema: z.record(z.string(), z.unknown()).nullable().optional(),
-  ui: z.object({ path: z.string().regex(/^\/[A-Za-z0-9/_-]*$/, "an absolute path"), title: z.string() }).nullable().optional(),
-  events: z.array(z.string().regex(/^[a-z0-9_.-]+$/)).default([]),
-  today: z.boolean().default(false),
-});
+const eventName = z.string().regex(/^[a-z0-9_.-]+$/);
+const jsonSchema = z.record(z.string(), z.unknown());
 
-export type Manifest = z.infer<typeof manifestSchema>;
+/** An event the plugin posts, with what the workflow editor shows for it. */
+export interface EventInfo {
+  type: string;
+  title: string | null;
+  description: string | null;
+  /** JSON Schema of the payload: its properties are the `event.<field>` paths conditions and templates can use. */
+  payload_schema: Record<string, unknown> | null;
+}
+
+export const manifestSchema = z
+  .object({
+    name: z.string(),
+    display_name: z.string(),
+    version: z.string(),
+    settings_schema: jsonSchema.nullable().optional(),
+    ui: z.object({ path: z.string().regex(/^\/[A-Za-z0-9/_-]*$/, "an absolute path"), title: z.string() }).nullable().optional(),
+    /** Plain names, or objects describing the event and its payload. */
+    events: z
+      .array(
+        z.union([
+          eventName,
+          z.object({ type: eventName, title: z.string().optional(), description: z.string().optional(), payload_schema: jsonSchema.optional() }),
+        ]),
+      )
+      .default([]),
+    /**
+     * Workflow steps are the plugin's MCP tools. Per tool name, optionally: a friendlier `title` (else
+     * the MCP tool title) and the JSON Schema of its result (`output_schema`), whose fields later steps
+     * can use as `steps.<id>.<field>`.
+     */
+    steps: z.record(z.string(), z.object({ title: z.string().optional(), output_schema: jsonSchema.optional() })).default({}),
+    today: z.boolean().default(false),
+  })
+  .transform(({ events, ...m }) => {
+    const event_info: EventInfo[] = events.map((e) =>
+      typeof e === "string"
+        ? { type: e, title: null, description: null, payload_schema: null }
+        : { type: e.type, title: e.title ?? null, description: e.description ?? null, payload_schema: e.payload_schema ?? null },
+    );
+    // `events` stays a list of names for older clients; the details are in `event_info`.
+    return { ...m, events: event_info.map((e) => e.type), event_info };
+  });
+
+export type Manifest = z.output<typeof manifestSchema>;
+/** What a plugin serves at GET /jeeves/manifest (before normalising). */
+export type ManifestInput = z.input<typeof manifestSchema>;
 
 /** A plugin's base URL: its MCP URL without the trailing /mcp. */
 export function pluginBase(url: string): string {

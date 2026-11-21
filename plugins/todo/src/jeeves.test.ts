@@ -58,7 +58,8 @@ describe("/jeeves manifest and auth", () => {
       display_name: "Chores",
       version: "0.1.0",
       ui: { path: "/jeeves/ui", title: "Chores" },
-      events: ["task_started", "task_completed"],
+      events: [expect.objectContaining({ type: "task_started" }), expect.objectContaining({ type: "task_completed" })],
+      steps: expect.objectContaining({ list_due_tasks: expect.objectContaining({ title: "List due chores" }) }),
       today: true,
       settings_schema: { type: "object" },
     });
