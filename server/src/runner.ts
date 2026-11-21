@@ -3,6 +3,8 @@ import type { Agent } from "./agent.js";
 import { evalCondExpr } from "./conditions.js";
 import { stepType, type ConfigSource, type Listener, type Step, type Workflow } from "./config.js";
 import type { Db, EventRow, Job, PlanItem, RunTrigger, WorkflowRunStatus } from "./db.js";
+import type { Notifier } from "./notify.js";
+import type { PhoneCommands } from "./phone.js";
 import type { PluginHost } from "./plugins.js";
 import { renderDeep, render, type TemplateContext } from "./template.js";
 import { eventContext } from "./triggers.js";
@@ -13,6 +15,8 @@ export interface RunnerDeps {
   config: ConfigSource;
   plugins: PluginHost;
   agent: Agent;
+  notifier: Notifier;
+  phone: PhoneCommands;
   now?: () => Date;
 }
 
@@ -359,6 +363,40 @@ export class WorkflowRunner {
       const reason = step.stop?.reason ? render(step.stop.reason, s.tctx, s.warnings) : undefined;
       done({ reason: reason ?? null });
       return { halt: "stopped", ...(reason ? { error: reason } : {}) };
+    }
+
+    if ("phone" in step) {
+      const input = step.phone;
+      if (s.dryRun) {
+        done({ dry_run: true, would_send: { phone: step.phone } }, { status: "skipped", input });
+        return {};
+      }
+      const { notifier, phone } = this.deps;
+      db.finishStep(s.stepRunId, { status: "running", input }, this.now());
+      const row = db.addPhoneCommand({ workflow_run_id: s.runId, step_run_id: s.stepRunId, payload: step.phone }, this.now(), phone.timeoutMs);
+      // Register the waiter before sending so a very fast reply cannot beat it.
+      const waiting = phone.wait(row.id);
+      let sent: number;
+      try {
+        sent = await notifier.command(row);
+      } catch (e) {
+        phone.cancel(row.id);
+        db.settlePhoneCommand(row.id, "failed", { ok: false, error: (e as Error).message });
+        throw new StepFailure(`could not push to the phone: ${(e as Error).message}`);
+      }
+      if (sent === 0) {
+        phone.cancel(row.id);
+        db.settlePhoneCommand(row.id, "failed", { ok: false, error: "no push" });
+        throw new StepFailure("no paired device has push set up (UnifiedPush): open Jeeves → Settings → Push");
+      }
+      const res = await waiting;
+      if (res === "timeout") {
+        db.settlePhoneCommand(row.id, "expired", { ok: false, error: "timeout" });
+        throw new StepFailure(`the phone didn't answer within ${Math.round(phone.timeoutMs / 1000)}s`);
+      }
+      if (!res.ok) throw new StepFailure(res.error ?? "the phone reported a failure");
+      done({ ok: true }, { input });
+      return {};
     }
 
     throw new StepFailure(`unknown step type`);

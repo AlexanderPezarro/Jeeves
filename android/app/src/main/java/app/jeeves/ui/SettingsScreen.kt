@@ -2,6 +2,8 @@ package app.jeeves.ui
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.app.NotificationManager
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -211,6 +213,12 @@ fun SettingsScreen(
                     Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, Uri.parse("package:${context.packageName}")),
                 )
             }
+        }
+        PermissionRow(
+            "Do Not Disturb access (for phone actions)",
+            (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).isNotificationPolicyAccessGranted,
+        ) {
+            openSettings.launch(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
         }
         OutlinedButton(
             onClick = {

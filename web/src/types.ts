@@ -56,10 +56,16 @@ export type Step =
     }
   | { id: string; wait: { minutes: number } | { until: string } }
   | { id: string; if: CondExpr; then: Step[]; else?: Step[] }
-  | { id: string; stop: { reason?: string } | null };
+  | { id: string; stop: { reason?: string } | null }
+  | { id: string; phone: PhoneAction };
 
-export type StepType = "call" | "claude" | "message" | "wait" | "if" | "stop";
-export const STEP_TYPES: StepType[] = ["message", "claude", "call", "wait", "if", "stop"];
+export type PhoneAction =
+  | { action: "dnd"; on: boolean }
+  | { action: "volume"; stream: "media" | "ring" | "alarm"; percent: number }
+  | { action: "media"; command: "play" | "pause" | "next" };
+
+export type StepType = "call" | "claude" | "message" | "wait" | "if" | "stop" | "phone";
+export const STEP_TYPES: StepType[] = ["message", "claude", "call", "phone", "wait", "if", "stop"];
 
 export function stepType(step: Step): StepType | null {
   for (const t of STEP_TYPES) if (t in step) return t;

@@ -1,15 +1,28 @@
 import { readFileSync } from "node:fs";
 import * as webpush from "web-push";
-import type { Db, MessageRow } from "./db.js";
+import type { Db, MessageRow, PhoneCommandRow } from "./db.js";
 
 /** Delivers an outgoing message to the phone. Messages are always stored first, so the app can also poll. */
 export interface Notifier {
   notify(message: MessageRow): Promise<void>;
+  /** Pushes a phone command. Returns how many devices the push was accepted for (0 = nothing can receive it). */
+  command(row: PhoneCommandRow): Promise<number>;
+}
+
+/** A command push is useless once the step has given up, so it must not be queued for hours. */
+export const COMMAND_TTL_SECONDS = 60;
+
+/** What a command push carries. `expires_at` lets the phone drop a command that arrives late. */
+export function phonePayload(row: PhoneCommandRow): { command_id: number; expires_at: string; phone: PhoneCommandRow["payload"] } {
+  return { command_id: row.id, expires_at: row.expires_at, phone: row.payload };
 }
 
 /** Used when Firebase is not configured: the app picks messages up by polling GET /messages. */
 export class PollOnlyNotifier implements Notifier {
   async notify(): Promise<void> {}
+  async command(): Promise<number> {
+    return 0;
+  }
 }
 
 /** The data every push carries, shared by FCM and Web Push so new fields are added in one place. */
@@ -48,6 +61,19 @@ export class FcmNotifier implements Notifier {
     const app = initializeApp({ credential: cert(JSON.parse(readFileSync(this.serviceAccountPath, "utf8"))) });
     this.messaging = getMessaging(app);
     return this.messaging;
+  }
+
+  async command(row: PhoneCommandRow): Promise<number> {
+    const tokens = this.db.pushTokens();
+    if (tokens.length === 0) return 0;
+    const messaging = await this.init();
+    const p = phonePayload(row);
+    const res = await messaging.sendEachForMulticast({
+      tokens,
+      android: { priority: "high", ttl: COMMAND_TTL_SECONDS * 1000 },
+      data: { command_id: String(p.command_id), expires_at: p.expires_at, phone: JSON.stringify(p.phone) },
+    });
+    return res.successCount;
   }
 
   async notify(message: MessageRow): Promise<void> {
@@ -112,8 +138,6 @@ export class WebPushNotifier implements Notifier {
   }
 
   async notify(message: MessageRow): Promise<void> {
-    const subs = this.db.webPushSubscriptions();
-    if (subs.length === 0) return;
     let body = JSON.stringify(pushPayload(message));
     if (Buffer.byteLength(body) > MAX_PLAINTEXT_BYTES) body = JSON.stringify({
         message_id: message.id,
@@ -121,15 +145,28 @@ export class WebPushNotifier implements Notifier {
         ...(message.level ? { level: message.level } : {}),
         ...(message.due_at ? { due_at: message.due_at } : {}),
       });
+    await this.sendAll(body, TTL_SECONDS);
+  }
+
+  async command(row: PhoneCommandRow): Promise<number> {
+    return this.sendAll(JSON.stringify(phonePayload(row)), COMMAND_TTL_SECONDS);
+  }
+
+  /** Sends `body` to every subscription, drops dead endpoints and returns how many accepted it. */
+  private async sendAll(body: string, ttl: number): Promise<number> {
+    const subs = this.db.webPushSubscriptions();
+    if (subs.length === 0) return 0;
     const vapidDetails = { subject: this.vapid.subject, publicKey: this.vapid.publicKey, privateKey: this.vapid.privateKey };
+    let accepted = 0;
     await Promise.all(
       subs.map(async (sub) => {
         try {
           await this.send(
             { endpoint: this.target(sub.endpoint), keys: { p256dh: sub.p256dh, auth: sub.auth } },
             body,
-            { TTL: TTL_SECONDS, urgency: "high", vapidDetails },
+            { TTL: ttl, urgency: "high", vapidDetails },
           );
+          accepted++;
         } catch (e) {
           const status = (e as { statusCode?: number }).statusCode;
           if (status === 404 || status === 410) {
@@ -141,6 +178,7 @@ export class WebPushNotifier implements Notifier {
         }
       }),
     );
+    return accepted;
   }
 }
 

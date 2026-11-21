@@ -384,6 +384,14 @@ class Api(private val prefs: Prefs) {
         })
     }
 
+    /** Reports the outcome of a pushed phone command. */
+    suspend fun phoneCommandResult(id: Long, ok: Boolean, error: String?) {
+        call("POST", "/phone-commands/$id/result", buildJsonObject {
+            put("ok", ok)
+            if (error != null) put("error", error.take(500))
+        })
+    }
+
     suspend fun plan() {
         call("POST", "/plan")
     }
