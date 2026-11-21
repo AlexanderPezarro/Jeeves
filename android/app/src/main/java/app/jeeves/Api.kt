@@ -47,6 +47,10 @@ data class ChatMessage(
     val text: String,
     val items: List<PlanItem>? = null,
     val created_at: String,
+    /** Reminder level: notify, loud or alarm. Null for ordinary messages. */
+    val level: String? = null,
+    /** When a reminder was meant to ring (ISO). */
+    val due_at: String? = null,
 )
 
 @Serializable private data class VapidKeyResponse(val public_key: String)
@@ -72,6 +76,11 @@ data class UpcomingItem(
     val dry_run: Boolean = false,
     val message: String? = null,
     val task_id: Long? = null,
+    /** For reminders. */
+    val plugin: String? = null,
+    val key: String? = null,
+    val level: String? = null,
+    val text: String? = null,
 )
 
 @Serializable
@@ -353,6 +362,11 @@ class Api(private val prefs: Prefs) {
             put("action", action)
             if (minutes != null) put("minutes", minutes)
         })
+    }
+
+    /** Re-queues a reminder message to ring again in [minutes] minutes. */
+    suspend fun snoozeMessage(id: Long, minutes: Int) {
+        call("POST", "/messages/$id/snooze", buildJsonObject { put("minutes", minutes) })
     }
 
     suspend fun messages(after: Long): List<ChatMessage> =

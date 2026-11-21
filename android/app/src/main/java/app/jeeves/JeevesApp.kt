@@ -5,7 +5,7 @@ import android.app.Application
 class JeevesApp : Application() {
     override fun onCreate() {
         super.onCreate()
-        Notifications.createChannel(this)
+        Notifications.createChannels(this)
         if (Prefs(this).isPaired) startBackground()
     }
 

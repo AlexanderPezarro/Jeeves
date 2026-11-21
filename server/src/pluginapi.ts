@@ -220,14 +220,19 @@ export function tokenAuthorizer(tokens: UiTokens, mount: string, now: () => Date
   };
 }
 
+/** The configured plugin whose bearer token the request carries, if any. */
+export function pluginFromToken(req: FastifyRequest, store: ConfigStore, plugins: ManagedPluginHost) {
+  const token = req.headers.authorization?.replace(/^Bearer /, "");
+  return token ? store.current.plugins.find((p) => plugins.token(p.name) === token) : undefined;
+}
+
 /**
  * `POST /plugin-events {type, payload}` from plugins, authenticated by matching the bearer against
  * each configured plugin's token. Stored as `<plugin>.<type>`; types not in the manifest are refused.
  */
 export function registerPluginEvents(app: FastifyInstance, { store, plugins, engine }: { store: ConfigStore; plugins: ManagedPluginHost; engine: Engine }) {
   app.post("/plugin-events", async (req, reply) => {
-    const token = req.headers.authorization?.replace(/^Bearer /, "");
-    const plugin = token ? store.current.plugins.find((p) => plugins.token(p.name) === token) : undefined;
+    const plugin = pluginFromToken(req, store, plugins);
     if (!plugin) return reply.code(401).send({ error: "unauthorized" });
     const body = z
       .object({ type: z.string().regex(/^[a-z0-9_-]+$/), payload: z.record(z.string(), z.unknown()).default({}) })

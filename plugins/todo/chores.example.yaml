@@ -28,6 +28,8 @@ chores:
     recurrence: { every: week, on: [wed, sun] }
     effort: 2
     est_minutes: 15
+    # remind_at: "18:00"     # optional per-chore reminder (local time)
+    # remind_level: loud     # notify, loud or alarm (default: chore_default_level setting)
     completion_mode: timer
     how_to:
       - Sort darks and lights, check pockets

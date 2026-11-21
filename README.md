@@ -34,7 +34,9 @@ Android app ──events──▶ server (workflows, scheduler, Claude) ──MC
    step can call the plugins' tools (`todo__list_due_tasks`, `todo__complete_task`, …) plus two
    built-ins: `send_message` and `schedule_followup`. Only messages reach your phone.
 4. **Completion.** Tap Done/Snooze/Skip on a notification or in the Today list, or reply in the chat
-   ("dishes done, laundry is in"). Starting a timed chore schedules its follow-up nudges.
+   ("dishes done, laundry is in"). Starting a timed chore schedules a reminder for each of its timer steps
+   (at the todo plugin's `timer_level`), and completing or skipping it cancels them. So a workflow
+   shouldn't also wait and nudge for the same timer.
 
 Every workflow run and each of its steps is logged in the server's database, and every Claude run
 with its input, transcript and token counts (`GET /runs`). `max_runs_per_day` caps spend.
@@ -51,19 +53,17 @@ config/
 A workflow:
 
 ```yaml
-id: laundry-check
-description: Nudge me while the washing is on
+id: laundry-done
+description: Tell me when something is finished
 cooldown: 0                     # "daily" (default) or minutes between fires
 notify_on_failure: true         # message me if a step fails (default)
 triggers:
-  - event: todo.task_started    # or wifi.connected, manual.plan, …; or `schedule: "0 9 * * sat"`
+  - event: todo.task_completed  # or wifi.connected, manual.plan, …; or `schedule: "0 9 * * sat"`
     when:                       # optional: ssid (a name or a list), after, before, days, min_away_minutes, conditions
       conditions: [{ path: event.chore_id, eq: laundry }]
 steps:
-  - id: pause
-    wait: { minutes: 75 }       # or { until: "18:30" }; waits survive restarts
-  - id: nudge
-    message: { text: "Wash is done: time to move {{event.name}} to the dryer" }
+  - id: done
+    message: { text: "{{event.name}} is done" }
 ```
 
 Step types: `call: {plugin, tool, args}`, `claude: {prompt, tools?}` (`tools` is an allowlist),

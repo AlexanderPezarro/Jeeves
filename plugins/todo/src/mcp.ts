@@ -1,7 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { emitTaskEvent, type EventPoster } from "./events.js";
-import { localDate, type TodoStore } from "./store.js";
+import type { ReminderScheduler } from "./reminders.js";
+import { localDate, type TaskInstance, type TodoStore } from "./store.js";
 import { VERSION } from "./version.js";
 
 export interface McpDeps {
@@ -10,6 +11,8 @@ export interface McpDeps {
   now?: () => Date;
   /** Where task_started / task_completed events go (fire and forget). */
   events?: EventPoster;
+  /** Schedules timer steps and daily reminders on Jeeves. Without it, start_task returns plain followups. */
+  reminders?: ReminderScheduler;
 }
 
 const json = (value: unknown) => ({
@@ -25,8 +28,16 @@ const fail = (message: string) => ({
  * Builds the MCP server the Jeeves control plane talks to. A fresh server is built per request
  * (stateless HTTP), so this must stay cheap.
  */
-export function buildMcpServer({ store, timeZone, now = () => new Date(), events }: McpDeps): McpServer {
+export function buildMcpServer({ store, timeZone, now = () => new Date(), events, reminders }: McpDeps): McpServer {
   const server = new McpServer({ name: "jeeves-todo", version: VERSION });
+
+  /** After a task is done or skipped: drop its timer reminders and refresh the daily set. */
+  const finishTimers = async (task: TaskInstance) => {
+    if (!reminders) return;
+    const chore = store.getChore(task.chore_id);
+    if (chore) await reminders.cancelTimers(task, chore);
+    await reminders.sync();
+  };
 
   server.registerTool(
     "list_due_tasks",
@@ -58,8 +69,9 @@ export function buildMcpServer({ store, timeZone, now = () => new Date(), events
     "start_task",
     {
       description:
-        "Mark a task as started. Returns the chore's timer steps with absolute due times, " +
-        "so the caller can schedule follow-up nudges (e.g. move laundry to the dryer).",
+        "Mark a task as started. Returns the chore's timer steps with absolute due times as `followups`. " +
+        "Followups with scheduled: true are already set up as reminders on Jeeves, so do NOT call " +
+        "schedule_followup for them; only schedule the ones with scheduled: false.",
       inputSchema: { task_id: z.number().int() },
     },
     async ({ task_id }) => {
@@ -67,12 +79,18 @@ export function buildMcpServer({ store, timeZone, now = () => new Date(), events
         const task = store.setState(task_id, "started", now());
         const chore = store.getChore(task.chore_id)!;
         let at = new Date(task.started_at!).getTime();
-        const steps = store.settings().followup_nudges ? chore.timer_steps : [];
-        const followups = steps.map((s) => {
-          at += s.after_minutes * 60_000;
-          return { at: new Date(at).toISOString(), message: s.message };
-        });
+        let followups: { at: string; message: string; scheduled?: boolean }[];
+        if (reminders) {
+          followups = await reminders.scheduleTimer(task, chore);
+        } else {
+          const steps = store.settings().followup_nudges ? chore.timer_steps : [];
+          followups = steps.map((s) => {
+            at += s.after_minutes * 60_000;
+            return { at: new Date(at).toISOString(), message: s.message };
+          });
+        }
         emitTaskEvent(store, events, "task_started", task);
+        await reminders?.sync();
         return json({ task, followups });
       } catch (e) {
         return fail((e as Error).message);
@@ -87,6 +105,7 @@ export function buildMcpServer({ store, timeZone, now = () => new Date(), events
       try {
         const task = store.setState(task_id, "done", now());
         emitTaskEvent(store, events, "task_completed", task);
+        await finishTimers(task);
         return json(task);
       } catch (e) {
         return fail((e as Error).message);
@@ -99,7 +118,9 @@ export function buildMcpServer({ store, timeZone, now = () => new Date(), events
     { description: "Skip a task for today.", inputSchema: { task_id: z.number().int() } },
     async ({ task_id }) => {
       try {
-        return json(store.setState(task_id, "skipped", now()));
+        const task = store.setState(task_id, "skipped", now());
+        await finishTimers(task);
+        return json(task);
       } catch (e) {
         return fail((e as Error).message);
       }
@@ -118,7 +139,9 @@ export function buildMcpServer({ store, timeZone, now = () => new Date(), events
     },
     async ({ task_id, minutes }) => {
       try {
-        return json(store.snooze(task_id, minutes ?? store.settings().default_snooze_minutes, now()));
+        const task = store.snooze(task_id, minutes ?? store.settings().default_snooze_minutes, now());
+        await reminders?.sync();
+        return json(task);
       } catch (e) {
         return fail((e as Error).message);
       }

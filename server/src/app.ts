@@ -11,6 +11,7 @@ import type { Db, Device } from "./db.js";
 import type { Engine } from "./engine.js";
 import { isManagedHost, registerPluginEvents, registerPluginRoutes, registerUiProxy, tokenAuthorizer } from "./pluginapi.js";
 import type { PluginHost } from "./plugins.js";
+import { registerPluginReminders } from "./reminders.js";
 
 export interface AppDeps {
   db: Db;
@@ -159,6 +160,20 @@ export function buildApp({ db, engine, pairingCode, store, config = store, plugi
       return engine.handleUserMessage(body.data.text);
     });
 
+    /** Re-queues a fired reminder `minutes` from now under the same plugin and key. */
+    authed.post("/messages/:id/snooze", async (req, reply) => {
+      const id = Number((req.params as { id: string }).id);
+      const body = z.object({ minutes: z.number().int().min(1).max(1440) }).safeParse(req.body);
+      if (!Number.isInteger(id) || !body.success) return reply.code(400).send({ error: "minutes must be 1 to 1440" });
+      const msg = db.getMessage(id);
+      if (!msg) return reply.code(404).send({ error: "not_found" });
+      const job = msg.job_id === null ? undefined : db.getJob(msg.job_id);
+      if (!job || job.kind !== "reminder" || !job.plugin || !job.reminder_key) {
+        return reply.code(400).send({ error: "not_a_reminder", message: "only reminder messages can be snoozed" });
+      }
+      return db.snoozeReminder(job, body.data.minutes, (now ?? (() => new Date()))());
+    });
+
     authed.get("/runs", async () => ({ runs: db.recentRuns() }));
 
     shared(authed, "/plugins");
@@ -168,6 +183,7 @@ export function buildApp({ db, engine, pairingCode, store, config = store, plugi
     // The app's WebView: authenticated by a short-lived ?t= token, then a path-scoped cookie.
     registerUiProxy(app, { plugins: managed, mount: "/plugins", authorize: tokenAuthorizer(uiTokens, "/plugins", now) });
     registerPluginEvents(app, { store, plugins: managed, engine });
+    registerPluginReminders(app, { store, plugins: managed, db, engine, now });
   }
 
   // The web UI's API: only via Caddy + Authelia, which set Remote-User. Device tokens don't work here.

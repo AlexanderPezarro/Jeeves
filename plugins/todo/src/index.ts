@@ -5,6 +5,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { httpEventPoster, type EventPoster } from "./events.js";
 import { jeevesRoutes } from "./jeeves.js";
 import { buildMcpServer } from "./mcp.js";
+import { httpReminderClient, ReminderScheduler } from "./reminders.js";
 import { seedFromFile } from "./seed.js";
 import { TodoStore } from "./store.js";
 
@@ -19,22 +20,33 @@ export interface AppOptions {
   events?: EventPoster;
   /** chores.yaml for the UI's "Import from chores.yaml" button. */
   choresFile?: string;
+  /** Overrides the scheduler built from jeevesUrl (tests). Not started by buildApp. */
+  reminders?: ReminderScheduler;
 }
 
-export function buildApp({ store, token, timeZone, now, jeevesUrl, events, choresFile }: AppOptions) {
+export function buildApp({ store, token, timeZone, now, jeevesUrl, events, choresFile, reminders: injected }: AppOptions) {
   const app = Fastify({ logger: process.env.NODE_ENV !== "test" });
   const poster = events ?? httpEventPoster({ jeevesUrl, token });
 
+  const reminders =
+    injected ??
+    (jeevesUrl
+      ? new ReminderScheduler({ store, client: httpReminderClient({ jeevesUrl, token }), timeZone, now })
+      : undefined);
+  app.addHook("onClose", async () => reminders?.stop());
+  // Exposed so main() can start it once the server listens.
+  (app as unknown as { reminders?: ReminderScheduler }).reminders = reminders;
+
   app.get("/health", async () => ({ ok: true }));
 
-  app.register(jeevesRoutes, { prefix: "/jeeves", store, token, choresFile });
+  app.register(jeevesRoutes, { prefix: "/jeeves", store, token, choresFile, reminders });
 
   // Stateless MCP over Streamable HTTP: one server + transport per request.
   app.post("/mcp", async (req, reply) => {
     if (req.headers.authorization !== `Bearer ${token}`) {
       return reply.code(401).send({ error: "unauthorized" });
     }
-    const server = buildMcpServer({ store, timeZone, now, events: poster });
+    const server = buildMcpServer({ store, timeZone, now, events: poster, reminders });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     reply.raw.on("close", () => {
       void transport.close();
@@ -74,6 +86,7 @@ async function main() {
     choresFile: seedPath,
   });
   await app.listen({ host: "0.0.0.0", port: Number(process.env.PORT ?? 8081) });
+  (app as unknown as { reminders?: ReminderScheduler }).reminders?.start();
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
