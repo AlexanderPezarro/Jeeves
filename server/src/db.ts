@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import Database from "better-sqlite3";
+import type { Condition } from "./config.js";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS devices (
@@ -70,6 +71,17 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
 );
 CREATE INDEX IF NOT EXISTS workflow_runs_wf ON workflow_runs (workflow_id, started_at);
 CREATE INDEX IF NOT EXISTS workflow_runs_time ON workflow_runs (started_at);
+CREATE TABLE IF NOT EXISTS run_listeners (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  workflow_run_id INTEGER NOT NULL,
+  step_path TEXT,
+  kind TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  conditions TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS run_listeners_type ON run_listeners (event_type);
+CREATE INDEX IF NOT EXISTS run_listeners_run ON run_listeners (workflow_run_id);
 CREATE TABLE IF NOT EXISTS step_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   workflow_run_id INTEGER NOT NULL,
@@ -137,7 +149,16 @@ const ADDED_INDEXES = [
 ];
 
 export type ReminderLevel = "notify" | "loud" | "alarm";
-export type CancelReason = "user" | "replaced" | "deleted";
+export type CancelReason = "user" | "replaced" | "deleted" | "run ended";
+
+export interface ListenerRow {
+  id: number;
+  workflow_run_id: number;
+  step_path: string | null;
+  kind: "until" | "cancel";
+  event_type: string;
+  conditions: Condition[];
+}
 
 export interface ReminderPayload {
   text: string;
@@ -490,9 +511,83 @@ export class Db {
   /** Sets a run's status. Final statuses also stamp finished_at; `waiting`/`running` clear it. */
   finishWorkflowRun(id: number, status: WorkflowRunStatus, error: string | null = null, now = new Date()): void {
     const final = status !== "running" && status !== "waiting";
+    this.sql.transaction(() => {
+      this.sql.prepare("UPDATE workflow_runs SET status = ?, error = ?, finished_at = ? WHERE id = ?").run(status, error, final ? now.toISOString() : null, id);
+      if (final) {
+        // A finished run leaves nothing behind that could wake it.
+        this.deleteListeners(id);
+        this.cancelJobsForRun(id, ["workflow_resume", "workflow_nag"], now);
+      }
+    })();
+  }
+
+  // Run listeners -------------------------------------------------------------
+
+  addListener(l: { workflow_run_id: number; step_path: string | null; kind: "until" | "cancel"; event_type: string; conditions: Condition[] }, now = new Date()): void {
     this.sql
-      .prepare("UPDATE workflow_runs SET status = ?, error = ?, finished_at = ? WHERE id = ?")
-      .run(status, error, final ? now.toISOString() : null, id);
+      .prepare("INSERT INTO run_listeners (workflow_run_id, step_path, kind, event_type, conditions, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(l.workflow_run_id, l.step_path, l.kind, l.event_type, JSON.stringify(l.conditions), now.toISOString());
+  }
+
+  /** Listeners for an event type whose run is still waiting. */
+  listenersFor(eventType: string): ListenerRow[] {
+    const rows = this.sql
+      .prepare(
+        `SELECT l.* FROM run_listeners l JOIN workflow_runs r ON r.id = l.workflow_run_id
+           WHERE l.event_type = ? AND r.status = 'waiting' ORDER BY l.id`,
+      )
+      .all(eventType) as (Omit<ListenerRow, "conditions"> & { conditions: string })[];
+    return rows.map((r) => ({ ...r, conditions: JSON.parse(r.conditions) as Condition[] }));
+  }
+
+  deleteListeners(runId: number, opts: { stepPath?: string; kind?: "until" | "cancel" } = {}): number {
+    let sql = "DELETE FROM run_listeners WHERE workflow_run_id = ?";
+    const args: unknown[] = [runId];
+    if (opts.stepPath !== undefined) {
+      sql += " AND step_path = ?";
+      args.push(opts.stepPath);
+    }
+    if (opts.kind) {
+      sql += " AND kind = ?";
+      args.push(opts.kind);
+    }
+    return this.sql.prepare(sql).run(...args).changes as number;
+  }
+
+  deleteListener(id: number): boolean {
+    return this.sql.prepare("DELETE FROM run_listeners WHERE id = ?").run(id).changes > 0;
+  }
+
+  hasListeners(runId: number, kind: "until" | "cancel"): boolean {
+    return !!this.sql.prepare("SELECT 1 FROM run_listeners WHERE workflow_run_id = ? AND kind = ? LIMIT 1").get(runId, kind);
+  }
+
+  /** Cancels a run's pending jobs of the given kinds. */
+  cancelJobsForRun(runId: number, kinds: string[], now = new Date(), reason: CancelReason = "run ended"): number {
+    const marks = kinds.map(() => "?").join(",");
+    return this.sql
+      .prepare(
+        `UPDATE jobs SET cancelled_at = ?, cancel_reason = ? WHERE done_at IS NULL AND cancelled_at IS NULL
+           AND kind IN (${marks}) AND json_extract(payload, '$.workflow_run_id') = ?`,
+      )
+      .run(now.toISOString(), reason, ...kinds, runId).changes as number;
+  }
+
+  /** True when a real (not dry) run of this workflow is paused. */
+  hasWaitingRun(workflowId: string): boolean {
+    return !!this.sql.prepare("SELECT 1 FROM workflow_runs WHERE workflow_id = ? AND status = 'waiting' AND dry_run = 0 LIMIT 1").get(workflowId);
+  }
+
+  /** Runs with a pending nag about this plugin item. */
+  nagRunsForItem(plugin: string, itemId: string): { run_id: number; step_path: string }[] {
+    const rows = this.sql
+      .prepare(
+        `SELECT json_extract(payload, '$.workflow_run_id') AS run_id, json_extract(payload, '$.step_path') AS step_path FROM jobs
+           WHERE done_at IS NULL AND cancelled_at IS NULL AND kind = 'workflow_nag'
+             AND json_extract(payload, '$.plugin') = ? AND json_extract(payload, '$.item_id') = ?`,
+      )
+      .all(plugin, itemId) as { run_id: number; step_path: string }[];
+    return rows.map((r) => ({ run_id: Number(r.run_id), step_path: String(r.step_path) }));
   }
 
   getWorkflowRun(id: number): WorkflowRunRow | undefined {
@@ -681,6 +776,9 @@ export class Db {
       const out: Record<string, number> = {};
       out.evaluations = this.sql.prepare("DELETE FROM evaluations WHERE at < ?").run(cutoff).changes;
       out.activity = this.sql.prepare("DELETE FROM activity WHERE at < ?").run(cutoff).changes;
+      out.run_listeners = this.sql
+        .prepare("DELETE FROM run_listeners WHERE workflow_run_id IN (SELECT id FROM workflow_runs WHERE finished_at IS NOT NULL AND finished_at < ?)")
+        .run(cutoff).changes;
       out.step_runs = this.sql
         .prepare("DELETE FROM step_runs WHERE workflow_run_id IN (SELECT id FROM workflow_runs WHERE finished_at IS NOT NULL AND finished_at < ?)")
         .run(cutoff).changes;

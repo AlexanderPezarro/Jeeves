@@ -1,8 +1,8 @@
 import { Cron } from "croner";
 import type { Agent } from "./agent.js";
 import { evalCondExpr } from "./conditions.js";
-import { stepType, type ConfigSource, type Step, type Workflow } from "./config.js";
-import type { Db, EventRow, PlanItem, RunTrigger, WorkflowRunStatus } from "./db.js";
+import { stepType, type ConfigSource, type Listener, type Step, type Workflow } from "./config.js";
+import type { Db, EventRow, Job, PlanItem, RunTrigger, WorkflowRunStatus } from "./db.js";
 import type { PluginHost } from "./plugins.js";
 import { renderDeep, render, type TemplateContext } from "./template.js";
 import { eventContext } from "./triggers.js";
@@ -30,6 +30,8 @@ export interface RunOutcome {
 
 /** Job kind for resuming a run after a `wait` step. */
 export const RESUME_JOB = "workflow_resume";
+/** Job kind for the next repeat of a `message` step with `repeat`. */
+export const NAG_JOB = "workflow_nag";
 
 // Paths -----------------------------------------------------------------------
 // A step's path is its position: "0", "1", "2.then.0", "2.else.1.then.3".
@@ -122,6 +124,9 @@ export class WorkflowRunner {
     const workflow = run.definition as Workflow;
     const waiting = db.waitingStep(workflowRunId);
     if (waiting) db.finishStep(waiting.id, { status: "ok" }, this.now());
+    // Whatever woke the run (timer, event), this step's other wake-ups are gone. cancel_on listeners stay.
+    db.deleteListeners(workflowRunId, { stepPath, kind: "until" });
+    db.cancelJobsForRun(workflowRunId, [NAG_JOB, RESUME_JOB], this.now());
     db.finishWorkflowRun(workflowRunId, "running", null, this.now());
     const event = run.event_id !== null ? db.getEvent(run.event_id) : undefined;
     const tctx: TemplateContext = { event: event ? eventContext(event) : {}, steps: db.stepOutputs(workflowRunId) };
@@ -133,15 +138,67 @@ export class WorkflowRunner {
     return this.execute(workflowRunId, workflow, tctx, next, run.dry_run, run.event_id);
   }
 
-  /** Cancels a waiting run (its resume job is cancelled by the caller). */
-  cancel(workflowRunId: number): boolean {
+  /** Cancels a waiting run. Its pending jobs and listeners go with it. */
+  cancel(workflowRunId: number, reason = "cancelled"): boolean {
     const { db } = this.deps;
     const run = db.getWorkflowRun(workflowRunId);
     if (!run || run.status !== "waiting") return false;
     const waiting = db.waitingStep(workflowRunId);
-    if (waiting) db.finishStep(waiting.id, { status: "cancelled", error: "cancelled" }, this.now());
-    db.finishWorkflowRun(workflowRunId, "cancelled", "cancelled", this.now());
+    if (waiting) db.finishStep(waiting.id, { status: "cancelled", error: reason }, this.now());
+    db.finishWorkflowRun(workflowRunId, "cancelled", reason, this.now());
     return true;
+  }
+
+  /** Sends the next repeat of a nagging `message` step, and schedules the one after (or the end). */
+  async nagTick(job: Job): Promise<void> {
+    const { db, agent } = this.deps;
+    const p = job.payload as { workflow_run_id: number; step_path: string; sent: number; final?: boolean; plugin?: string; item_id?: string };
+    const runId = Number(p.workflow_run_id);
+    const run = db.getWorkflowRun(runId);
+    if (!run || run.status !== "waiting") return;
+    const waiting = db.waitingStep(runId);
+    if (!waiting || waiting.path !== p.step_path) return;
+    if (p.final) {
+      db.finishStep(waiting.id, { status: "cancelled", error: "nag limit reached" }, this.now());
+      db.finishWorkflowRun(runId, "stopped", "nag limit reached", this.now());
+      return;
+    }
+    const workflow = run.definition as Workflow;
+    const step = stepAt(workflow.steps, p.step_path);
+    if (!step || !("message" in step)) return;
+    const event = run.event_id !== null ? db.getEvent(run.event_id) : undefined;
+    const tctx: TemplateContext = { event: event ? eventContext(event) : {}, steps: db.stepOutputs(runId) };
+    const { text, items } = this.renderMessage(step.message, tctx, []);
+    const sent = Number(p.sent) + 1;
+    const msg = await agent.sendMessage(text, items, null, { level: step.message.level });
+    const repeat = step.message.repeat;
+    let next_at: string | undefined;
+    if (repeat) next_at = this.scheduleNag(runId, p.step_path, sent, repeat, p.plugin, p.item_id);
+    const prev = (waiting.output ?? {}) as Record<string, unknown>;
+    db.finishStep(waiting.id, { status: "waiting", output: { ...prev, message_id: msg.id, sent, ...(next_at ? { next_at } : {}) } }, this.now());
+  }
+
+  private scheduleNag(runId: number, stepPath: string, sent: number, repeat: { every_minutes: number; max?: number }, plugin?: string, item_id?: string): string {
+    const at = new Date(this.now().getTime() + repeat.every_minutes * 60_000);
+    const final = repeat.max !== undefined && sent >= repeat.max;
+    this.deps.db.addJob(at, NAG_JOB, { workflow_run_id: runId, step_path: stepPath, sent, ...(final ? { final: true } : {}), ...(plugin && item_id ? { plugin, item_id } : {}) });
+    return at.toISOString();
+  }
+
+  private renderMessage(m: { text: string; items?: unknown[] }, tctx: TemplateContext, warnings: string[]) {
+    const text = render(m.text, tctx, warnings);
+    const items: PlanItem[] = (renderDeep(m.items ?? [], tctx, warnings) as (Omit<PlanItem, "item_id"> & { item_id?: unknown })[]).map((i) => ({
+      ...i,
+      ...(i.item_id === undefined || i.item_id === null ? { item_id: undefined } : { item_id: String(i.item_id) }),
+      steps: i.steps ?? [],
+    }));
+    return { text, items };
+  }
+
+  private registerListener(runId: number, stepPath: string | null, kind: "until" | "cancel", spec: Listener, tctx: TemplateContext, warnings: string[]) {
+    // renderDeep keeps a lone {{ref}} typed (task_id 12 stays a number), so it compares equal to the event payload.
+    const conditions = renderDeep(spec.conditions ?? [], tctx, warnings);
+    this.deps.db.addListener({ workflow_run_id: runId, step_path: stepPath, kind, event_type: spec.event, conditions }, this.now());
   }
 
   private async execute(
@@ -174,6 +231,10 @@ export class WorkflowRunner {
         return { workflowRunId: runId, status: "failed", error };
       }
       if ("halt" in result) {
+        if (result.halt === "waiting" && !dryRun && workflow.cancel_on?.length && !db.hasListeners(runId, "cancel")) {
+          const w: string[] = [];
+          for (const l of workflow.cancel_on) this.registerListener(runId, null, "cancel", l, tctx, w);
+        }
         db.finishWorkflowRun(runId, result.halt, result.error ?? null, this.now());
         return { workflowRunId: runId, status: result.halt, ...(result.error ? { error: result.error } : {}) };
       }
@@ -250,20 +311,25 @@ export class WorkflowRunner {
     }
 
     if ("message" in step) {
-      const text = render(step.message.text, s.tctx, s.warnings);
-      const items: PlanItem[] = (renderDeep(step.message.items ?? [], s.tctx, s.warnings) as (Omit<PlanItem, "item_id"> & { item_id?: unknown })[]).map((i) => ({
-        ...i,
-        ...(i.item_id === undefined || i.item_id === null ? { item_id: undefined } : { item_id: String(i.item_id) }),
-        steps: i.steps ?? [],
-      }));
-      const input = { text, ...(items.length ? { items } : {}) };
+      const { text, items } = this.renderMessage(step.message, s.tctx, s.warnings);
+      const { level, repeat, until } = step.message;
+      const input = { text, ...(items.length ? { items } : {}), ...(level ? { level } : {}) };
       if (s.dryRun) {
         done({ dry_run: true, text, items }, { input });
         return {};
       }
-      const msg = await agent.sendMessage(text, items);
-      done({ message_id: msg.id, text }, { input });
-      return {};
+      const msg = await agent.sendMessage(text, items, null, { level });
+      if (!until) {
+        done({ message_id: msg.id, text }, { input });
+        return {};
+      }
+      this.registerListener(s.runId, path, "until", until, s.tctx, s.warnings);
+      const about = items.find((i) => i.plugin && i.item_id);
+      const next_at = repeat ? this.scheduleNag(s.runId, path, 1, repeat, about?.plugin, about?.item_id) : undefined;
+      const output = { message_id: msg.id, text, sent: 1, ...(next_at ? { next_at } : {}) };
+      db.finishStep(s.stepRunId, { status: "waiting", output, input, warnings: s.warnings }, this.now());
+      s.tctx.steps[step.id] = output;
+      return { halt: "waiting" };
     }
 
     if ("wait" in step) {

@@ -139,9 +139,13 @@ export function ssidList(ssid: When["ssid"]): string[] {
   return (Array.isArray(ssid) ? ssid : [ssid]).filter((s) => s !== "");
 }
 
-const eventTrigger = z
-  .object({ event: z.string().regex(/^[a-z0-9_.-]+$/, "an event type like wifi.connected or todo.task_started"), when: whenSchema.optional() })
-  .strict();
+const eventType = z.string().regex(/^[a-z0-9_.-]+$/, "an event type like wifi.connected or todo.task_started");
+const eventTrigger = z.object({ event: eventType, when: whenSchema.optional() }).strict();
+
+/** An event a paused run waits for: `until` on a message step, or `cancel_on` on a workflow. */
+export const listenerSchema = z.object({ event: eventType, conditions: z.array(conditionSchema).optional() }).strict();
+export type Listener = z.infer<typeof listenerSchema>;
+export const messageLevelSchema = z.enum(["notify", "loud", "alarm"]);
 const scheduleTrigger = z
   .object({
     schedule: z
@@ -178,7 +182,16 @@ const planItemSchema = z.object({
 export type Step =
   | { id: string; call: { plugin: string; tool: string; args?: Record<string, unknown> } }
   | { id: string; claude: { prompt: string; tools?: string[]; model?: string; effort?: Effort; history?: boolean } }
-  | { id: string; message: { text: string; items?: { plugin?: string; item_id?: string | number; title: string; steps?: string[]; minutes?: number }[] } }
+  | {
+      id: string;
+      message: {
+        text: string;
+        items?: { plugin?: string; item_id?: string | number; title: string; steps?: string[]; minutes?: number }[];
+        level?: "notify" | "loud" | "alarm";
+        repeat?: { every_minutes: number; max?: number };
+        until?: Listener;
+      };
+    }
   | { id: string; wait: { minutes: number } | { until: string } }
   | { id: string; if: CondExpr; then: Step[]; else?: Step[] }
   | { id: string; stop: { reason?: string } | null };
@@ -218,7 +231,25 @@ export const stepSchema: z.ZodType<Step> = z.lazy(() =>
           .strict(),
       })
       .strict(),
-    z.object({ id: stepId, message: z.object({ text: z.string().min(1), items: z.array(planItemSchema).optional() }).strict() }).strict(),
+    z
+      .object({
+        id: stepId,
+        message: z
+          .object({
+            text: z.string().min(1),
+            items: z.array(planItemSchema).optional(),
+            level: messageLevelSchema.optional(),
+            /** Send again every N minutes until the `until` event arrives (or `max` sends). */
+            repeat: z.object({ every_minutes: z.number().int().min(1).max(24 * 60), max: z.number().int().min(1).optional() }).strict().optional(),
+            /** Pause the run after sending until this event arrives. */
+            until: listenerSchema.optional(),
+          })
+          .strict()
+          .superRefine((m, ctx) => {
+            if (m.repeat && !m.until) ctx.addIssue({ code: "custom", path: ["repeat"], message: "repeat needs until" });
+          }),
+      })
+      .strict(),
     z
       .object({
         id: stepId,
@@ -256,6 +287,8 @@ export const workflowSchema = z
     cooldown: z.union([z.literal("daily"), z.number().int().min(0)]).default("daily"),
     notify_on_failure: z.boolean().default(true),
     triggers: z.array(triggerSchema).min(1),
+    /** Events that end a paused run (e.g. leaving the Wi-Fi). Registered when the run first pauses. */
+    cancel_on: z.array(listenerSchema).optional(),
     steps: z.array(stepSchema).min(1),
   })
   .strict()
@@ -288,6 +321,37 @@ export const workflowSchema = z
       });
     };
     walk(wf.steps, ["steps"]);
+    const ids = new Set<string>();
+    const collect = (steps: Step[]) =>
+      steps.forEach((st) => {
+        ids.add(st.id);
+        if ("if" in st) {
+          collect(st.then);
+          collect(st.else ?? []);
+        }
+      });
+    collect(wf.steps);
+    const checkListener = (l: Listener, path: (string | number)[], anyStep: boolean) => {
+      l.conditions?.forEach((c, ci) => {
+        if (!c.path.startsWith("event")) ctx.addIssue({ code: "custom", path: [...path, "conditions", ci, "path"], message: "listener conditions can only check event.*" });
+      });
+      if (!anyStep) return;
+      for (const ref of templateRefs(l)) {
+        const m = /^steps\.([a-z0-9-]+)(\.|$)/.exec(ref);
+        if (ref === "event" || ref.startsWith("event.") || (m && ids.has(m[1]))) continue;
+        ctx.addIssue({ code: "custom", path, message: `"${ref}" must start with event. or steps.<id> of a step in this workflow` });
+      }
+    };
+    wf.cancel_on?.forEach((l, i) => checkListener(l, ["cancel_on", i], true));
+    const walkUntil = (steps: Step[], path: (string | number)[]) =>
+      steps.forEach((st, i) => {
+        if ("message" in st && st.message.until) checkListener(st.message.until, [...path, i, "message", "until"], false);
+        if ("if" in st) {
+          walkUntil(st.then, [...path, i, "then"]);
+          walkUntil(st.else ?? [], [...path, i, "else"]);
+        }
+      });
+    walkUntil(wf.steps, ["steps"]);
     wf.triggers.forEach((t, i) => {
       for (const c of t.when?.conditions ?? []) {
         if (!c.path.startsWith("event")) ctx.addIssue({ code: "custom", path: ["triggers", i, "when", "conditions"], message: "trigger conditions can only check event.*" });

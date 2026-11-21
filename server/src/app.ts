@@ -146,7 +146,7 @@ export function buildApp({ db, engine, pairingCode, store, config = store, plugi
     });
 
     // Plugin lists (the app's Today tab) and the buttons on their items and on notifications.
-    if (managed) registerViewRoutes(authed, { plugins: managed, db, now: clock });
+    if (managed) registerViewRoutes(authed, { plugins: managed, db, now: clock, cancelRun: (id, reason) => engine.runner.cancel(id, reason) });
 
     authed.get("/messages", async (req) => {
       const after = Number((req.query as { after?: string }).after ?? 0) || 0;

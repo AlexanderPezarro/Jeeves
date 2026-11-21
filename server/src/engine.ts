@@ -3,8 +3,9 @@ import { Agent } from "./agent.js";
 import { isSchedule, type ConfigSource, type Workflow } from "./config.js";
 import type { Db, EventRow, ReminderPayload } from "./db.js";
 import type { PluginHost } from "./plugins.js";
-import { RESUME_JOB, WorkflowRunner, type RunOutcome } from "./runner.js";
-import { evaluateWorkflows, scheduleEventType, type Decision } from "./triggers.js";
+import { NAG_JOB, RESUME_JOB, WorkflowRunner, type RunOutcome } from "./runner.js";
+import { evalCondition } from "./conditions.js";
+import { eventContext, evaluateWorkflows, scheduleEventType, type Decision } from "./triggers.js";
 import { localTime } from "./time.js";
 
 /** The event a chat message from the phone becomes. */
@@ -77,7 +78,21 @@ export class Engine {
       this.db.recordFire(d.workflow_id, event.id, local.date, now);
       this.background(this.runner.start(d.workflow, { event, trigger }));
     }
+    this.matchListeners(event);
     return { event, decisions: decisions.map((d) => ({ workflow_id: d.workflow_id, fired: d.fired, reason: d.reason })) };
+  }
+
+  /** Wakes or ends paused runs that are listening for this event (message `until`, workflow `cancel_on`). */
+  private matchListeners(event: EventRow) {
+    const ctx = { event: eventContext(event), steps: {} };
+    for (const l of this.db.listenersFor(event.type)) {
+      if (!l.conditions.every((c) => evalCondition(c, ctx))) continue;
+      // Delete first so a duplicate event can't act twice.
+      if (!this.db.deleteListener(l.id)) continue;
+      console.log(`Run ${l.workflow_run_id} ${l.kind === "cancel" ? "cancelled" : "resumed"} by ${event.type}`);
+      if (l.kind === "cancel") this.runner.cancel(l.workflow_run_id, `cancelled by ${event.type}`);
+      else if (l.step_path !== null) this.background(this.runner.resume(l.workflow_run_id, l.step_path));
+    }
   }
 
   /**
@@ -135,7 +150,7 @@ export class Engine {
   cancelJob(id: number): boolean {
     const job = this.db.getJob(id);
     if (!job || !this.db.cancelJob(id, this.now())) return false;
-    if (job.kind === RESUME_JOB) this.runner.cancel(Number(job.payload.workflow_run_id));
+    if (job.kind === RESUME_JOB || job.kind === NAG_JOB) this.runner.cancel(Number(job.payload.workflow_run_id));
     return true;
   }
 
@@ -154,6 +169,8 @@ export class Engine {
           this.db.addActivity("reminder_fired", job.plugin ?? null, { key: job.reminder_key, level: p.level, message_id: msg.id }, this.now());
         } else if (job.kind === RESUME_JOB) {
           await this.runner.resume(Number(job.payload.workflow_run_id), String(job.payload.step_path));
+        } else if (job.kind === NAG_JOB) {
+          await this.runner.nagTick(job);
         }
       } catch (e) {
         console.error(`Job ${job.id} (${job.kind}) failed`, e);
