@@ -71,28 +71,12 @@ export const UI_HTML = `<!doctype html>
     <label>How to <small>(one step per line)</small>
       <textarea name="how_to" rows="4"></textarea></label>
 
-    <div class="row">
-      <label>Remind at <small>(blank = no reminder)</small> <input type="time" name="remind_at"></label>
-      <label>Reminder level
-        <select name="remind_level">
-          <option value="">Default</option>
-          <option value="notify">Notify</option>
-          <option value="loud">Loud</option>
-          <option value="alarm">Alarm</option>
-        </select>
-      </label>
-    </div>
-
     <label>Completion
       <select name="completion_mode">
         <option value="reply">Reply (tap Done)</option>
-        <option value="timer">Timer (follow-up nudges)</option>
         <option value="sensor">Sensor</option>
       </select>
     </label>
-
-    <label>Timer steps <small>(one per line: minutes after the previous step | message)</small>
-      <textarea name="timer_steps" rows="3" placeholder="75 | Move the washing to the dryer"></textarea></label>
 
     <label>Goal <small>(optional)</small> <input name="goal"></label>
     <label class="check"><input type="checkbox" name="active" checked> Active</label>
@@ -222,7 +206,7 @@ export const UI_JS = `(function () {
       if (!c.active) name.appendChild(el("span", "badge", "inactive"));
       if (c.completion_mode !== "reply") name.appendChild(el("span", "badge", c.completion_mode));
       info.appendChild(name);
-      info.appendChild(el("div", "meta", describe(c.recurrence) + " · effort " + c.effort + " · " + c.est_minutes + " min" + (c.remind_at ? " · reminds " + c.remind_at : "")));
+      info.appendChild(el("div", "meta", describe(c.recurrence) + " · effort " + c.effort + " · " + c.est_minutes + " min"));
       if (c.goal) info.appendChild(el("div", "meta", "Goal: " + c.goal));
       var actions = el("div", "actions");
       var edit = el("button", "secondary", "Edit");
@@ -282,9 +266,6 @@ export const UI_JS = `(function () {
       f.est_minutes.value = c.est_minutes;
       f.how_to.value = c.how_to.join("\\n");
       f.completion_mode.value = c.completion_mode;
-      f.timer_steps.value = c.timer_steps.map(function (s) { return s.after_minutes + " | " + s.message; }).join("\\n");
-      f.remind_at.value = c.remind_at || "";
-      f.remind_level.value = c.remind_level || "";
       f.goal.value = c.goal || "";
       f.active.checked = c.active;
     }
@@ -315,11 +296,6 @@ export const UI_JS = `(function () {
     }
     if (every === "month") recurrence = { every: "month", day: Number(f.day.value) };
     if (every === "days") recurrence = { every: "days", interval: Number(f.interval.value), start: f.start.value };
-    var timer_steps = lines(f.timer_steps.value).map(function (l) {
-      var m = /^(\\d+)\\s*\\|\\s*(.+)$/.exec(l);
-      if (!m) throw new Error("Timer step lines look like: 75 | Move the washing to the dryer");
-      return { after_minutes: Number(m[1]), message: m[2] };
-    });
     var body = {
       name: f.name.value.trim(),
       recurrence: recurrence,
@@ -327,10 +303,7 @@ export const UI_JS = `(function () {
       est_minutes: Number(f.est_minutes.value),
       how_to: lines(f.how_to.value),
       completion_mode: f.completion_mode.value,
-      timer_steps: timer_steps,
-      active: f.active.checked,
-      remind_at: f.remind_at.value || null,
-      remind_level: f.remind_level.value || null
+      active: f.active.checked
     };
     var goal = f.goal.value.trim();
     if (goal) body.goal = goal;

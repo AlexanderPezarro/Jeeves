@@ -53,8 +53,23 @@ describe("TodoStore", () => {
   });
 });
 
+describe("getTaskFor", () => {
+  const now = new Date("2026-11-15T10:00:00Z"); // Sunday
+  it("creates a due instance, returns any state, and null when not due", () => {
+    const store = new TodoStore();
+    seedFromFile(store, "chores.example.yaml");
+    const t = store.getTaskFor("laundry", "2026-11-15")!;
+    expect(t).toMatchObject({ chore_id: "laundry", state: "pending", name: expect.any(String), how_to: expect.any(Array) });
+    expect(store.getTaskFor("laundry", "2026-11-15")!.id).toBe(t.id);
+    store.setState(t.id, "done", now);
+    expect(store.getTaskFor("laundry", "2026-11-15")).toMatchObject({ state: "done" });
+    expect(store.getTaskFor("laundry", "2026-11-16")).toBeNull();
+    expect(store.getTaskFor("missing", "2026-11-15")).toBeNull();
+  });
+});
+
 describe("MCP endpoint", () => {
-  it("exposes the to-do tools and returns laundry follow-ups on start", async () => {
+  it("exposes the to-do tools, including get_task", async () => {
     const store = new TodoStore();
     seedFromFile(store, "chores.example.yaml");
     const now = () => new Date("2026-11-15T10:00:00Z"); // Sunday: laundry day
@@ -69,7 +84,7 @@ describe("MCP endpoint", () => {
     );
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(
-      ["complete_task", "get_chore", "list_due_tasks", "skip_task", "snooze_task", "start_task"].sort(),
+      ["complete_task", "get_chore", "get_task", "list_due_tasks", "skip_task", "snooze_task", "start_task"].sort(),
     );
 
     const due = await client.callTool({ name: "list_due_tasks", arguments: {} });
@@ -78,11 +93,15 @@ describe("MCP endpoint", () => {
     expect(laundry).toBeDefined();
 
     const started = await client.callTool({ name: "start_task", arguments: { task_id: laundry.id } });
-    const { followups } = JSON.parse((started.content as { text: string }[])[0].text);
-    expect(followups).toEqual([
-      { at: "2026-11-15T11:15:00.000Z", message: expect.stringContaining("dryer") },
-      { at: "2026-11-15T12:15:00.000Z", message: expect.stringContaining("fold") },
-    ]);
+    expect(JSON.parse((started.content as { text: string }[])[0].text)).toMatchObject({ id: laundry.id, state: "started" });
+
+    const text = async (name: string, args: Record<string, unknown>) => {
+      const r = await client.callTool({ name, arguments: args });
+      return { isError: r.isError, text: (r.content as { text: string }[])[0].text };
+    };
+    expect(JSON.parse((await text("get_task", { chore_id: "laundry" })).text)).toMatchObject({ id: laundry.id, state: "started", name: expect.any(String) });
+    expect(JSON.parse((await text("get_task", { chore_id: "bins" })).text)).toBeNull(); // bins is Monday only
+    expect((await text("get_task", { chore_id: "nope" })).isError).toBe(true);
 
     await client.close();
     await app.close();

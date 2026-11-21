@@ -1,6 +1,6 @@
 import type { TaskInstance, TodoStore } from "./store.js";
 
-export type TaskEventType = "task_started" | "task_completed";
+export type TaskEventType = "task_started" | "task_completed" | "task_skipped";
 
 export interface TaskEventPayload {
   task_id: number;

@@ -10,7 +10,9 @@
 #   { every: month, day: 1 }
 #   { every: days, interval: 3, start: 2026-11-01 }
 # effort: 1 (trivial) to 5 (hard). The planner puts the easiest first.
-# completion_mode: reply (tap Done), timer (follow-up nudges), sensor (smart plug, later).
+# completion_mode: reply (tap Done), sensor (smart plug, later).
+# Timed chores like laundry (nudge until started, then until done) are workflows now: see
+# config.example/workflows/laundry.yaml in the Jeeves repo.
 
 chores:
   - id: dishes
@@ -28,16 +30,10 @@ chores:
     recurrence: { every: week, on: [wed, sun] }
     effort: 2
     est_minutes: 15
-    # remind_at: "18:00"     # optional per-chore reminder (local time)
-    # remind_level: loud     # notify, loud or alarm (default: chore_default_level setting)
-    completion_mode: timer
     how_to:
       - Sort darks and lights, check pockets
       - 40 degree cycle, one pod in the drum
-      - Tap Start so Jeeves can nudge you when it's done
-    timer_steps:
-      - { after_minutes: 75, message: "Wash is done: move it to the dryer or hang it up" }
-      - { after_minutes: 60, message: "Dryer is done: fold and put it away while it's warm" }
+      - Tap Start when the machine is running
 
   - id: bins
     name: Take the bins out

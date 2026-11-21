@@ -1,8 +1,8 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { buildApp } from "./index.js";
@@ -18,7 +18,6 @@ class FakeClient implements ReminderClient {
   groups: Reminder[][] = [];
   puts: { key: string; at: string; level: string; text: string }[] = [];
   ok = true;
-  failDeletes = false;
   async putGroup(group: string, reminders: Reminder[]) {
     this.calls.push(`group:${group}`);
     if (this.ok) this.groups.push(reminders);
@@ -31,7 +30,7 @@ class FakeClient implements ReminderClient {
   }
   async delete(key: string) {
     this.calls.push(`delete:${key}`);
-    return !this.failDeletes;
+    return true;
   }
 }
 
@@ -85,33 +84,9 @@ describe("ReminderScheduler.computeDaily", () => {
     expect(fall.find((r) => r.key.startsWith("due:"))!.at).toBe("2026-10-25T09:00:00.000Z");
   });
 
-  it("adds chore reminders only for open tasks with remind_at, with level fallback", () => {
+  it("drops the update reminder once everything is done", () => {
     const { store, scheduler } = setup();
-    const laundry = store.getChore("laundry")!;
-    store.upsertChore({ ...laundry, remind_at: "18:00" });
-    const dishes = store.getChore("dishes")!;
-    store.upsertChore({ ...dishes, remind_at: "19:30", remind_level: "loud" });
-    store.setSettings({ chore_default_level: "alarm" });
-
-    const out = scheduler.computeDaily();
-    const lt = store.listDue("2026-11-15", SUNDAY);
-    const laundryTask = lt.find((t) => t.chore_id === "laundry")!;
-    const dishesTask = lt.find((t) => t.chore_id === "dishes")!;
-    expect(out.filter((r) => r.key.startsWith("chore:")).map((r) => r.key).sort()).toEqual(
-      [`chore:${laundryTask.id}`, `chore:${dishesTask.id}`].sort(),
-    );
-    expect(out.find((r) => r.key === `chore:${laundryTask.id}`)).toMatchObject({
-      at: "2026-11-15T18:00:00.000Z",
-      level: "alarm",
-      items: [{ item_id: String(laundryTask.id) }],
-    });
-    expect(out.find((r) => r.key === `chore:${dishesTask.id}`)).toMatchObject({ level: "loud" });
-  });
-
-  it("drops chore and update reminders once everything is done", () => {
-    const { store, scheduler } = setup();
-    store.upsertChore({ ...store.getChore("laundry")!, remind_at: "18:00" });
-    expect(scheduler.computeDaily().map((r) => r.key.split(":")[0])).toEqual(["due", "chore", "update"]);
+    expect(scheduler.computeDaily().map((r) => r.key.split(":")[0])).toEqual(["due", "update"]);
     for (const t of store.listDue("2026-11-15", SUNDAY)) store.setState(t.id, t.id % 2 ? "done" : "skipped", SUNDAY);
     expect(scheduler.computeDaily()).toEqual([]);
   });
@@ -140,8 +115,8 @@ describe("ReminderScheduler.sync", () => {
     expect(client.groups[2]).toEqual([]);
   });
 
-  it("sets dirty on failure and re-sends next time; retries queued deletes", async () => {
-    const { store, client, scheduler } = setup();
+  it("sets dirty on failure and re-sends next time", async () => {
+    const { client, scheduler } = setup();
     client.ok = false;
     await scheduler.sync();
     expect(scheduler.dirty).toBe(true);
@@ -150,16 +125,6 @@ describe("ReminderScheduler.sync", () => {
     expect(scheduler.dirty).toBe(false);
     expect(client.groups).toHaveLength(1);
 
-    const task = store.listDue("2026-11-15", SUNDAY).find((t) => t.chore_id === "laundry")!;
-    client.failDeletes = true;
-    await scheduler.cancelTimers(task, store.getChore("laundry")!);
-    client.calls = [];
-    client.failDeletes = false;
-    await scheduler.sync();
-    expect(client.calls).toEqual([`delete:timer:${task.id}:1`, `delete:timer:${task.id}:2`, "group:daily"]);
-    client.calls = [];
-    await scheduler.sync();
-    expect(client.calls).toEqual(["group:daily"]);
   });
 
   it("serialises overlapping syncs and re-runs once", async () => {
@@ -169,7 +134,7 @@ describe("ReminderScheduler.sync", () => {
   });
 });
 
-describe("timer reminders over MCP", () => {
+describe("reminder syncs over MCP and routes", () => {
   const closers: (() => Promise<unknown>)[] = [];
   afterEach(async () => {
     while (closers.length) await closers.pop()!();
@@ -191,54 +156,18 @@ describe("timer reminders over MCP", () => {
     return { call, app };
   }
 
-  it("start_task PUTs timer reminders and complete_task / skip_task delete them", async () => {
+  it("start, complete and skip only refresh the daily set (no per-task reminders)", async () => {
     const store = new TodoStore();
     seedFromFile(store, "chores.example.yaml");
     const client = new FakeClient();
     const { call } = await connect(client, store);
     const laundry = store.listDue("2026-11-15", SUNDAY).find((t) => t.chore_id === "laundry")!;
 
-    const { followups } = await call("start_task", { task_id: laundry.id });
-    expect(followups).toEqual([
-      { at: "2026-11-15T08:15:00.000Z", message: expect.stringContaining("dryer"), scheduled: true },
-      { at: "2026-11-15T09:15:00.000Z", message: expect.stringContaining("fold"), scheduled: true },
-    ]);
-    expect(client.puts.map((p) => [p.key, p.at, p.level])).toEqual([
-      [`timer:${laundry.id}:1`, "2026-11-15T08:15:00.000Z", "alarm"],
-      [`timer:${laundry.id}:2`, "2026-11-15T09:15:00.000Z", "alarm"],
-    ]);
-    expect(client.calls.at(-1)).toBe("group:daily");
-
-    client.calls = [];
+    expect(await call("start_task", { task_id: laundry.id })).toMatchObject({ id: laundry.id, state: "started" });
+    expect(client.calls).toEqual(["group:daily"]);
     await call("complete_task", { task_id: laundry.id });
-    expect(client.calls).toEqual([`delete:timer:${laundry.id}:1`, `delete:timer:${laundry.id}:2`, "group:daily"]);
-
-    client.calls = [];
     await call("skip_task", { task_id: laundry.id });
-    expect(client.calls.filter((c) => c.startsWith("delete:"))).toHaveLength(2);
-  });
-
-  it("returns scheduled: false when the PUT fails, and does not retry", async () => {
-    const store = new TodoStore();
-    seedFromFile(store, "chores.example.yaml");
-    const client = new FakeClient();
-    client.ok = false;
-    const { call } = await connect(client, store);
-    const laundry = store.listDue("2026-11-15", SUNDAY).find((t) => t.chore_id === "laundry")!;
-    const { followups } = await call("start_task", { task_id: laundry.id });
-    expect(followups.map((f: { scheduled: boolean }) => f.scheduled)).toEqual([false, false]);
-    expect(client.calls.filter((c) => c.startsWith("put:"))).toHaveLength(2);
-  });
-
-  it("schedules nothing when followup_nudges is off", async () => {
-    const store = new TodoStore();
-    seedFromFile(store, "chores.example.yaml");
-    store.setSettings({ followup_nudges: false });
-    const client = new FakeClient();
-    const { call } = await connect(client, store);
-    const laundry = store.listDue("2026-11-15", SUNDAY).find((t) => t.chore_id === "laundry")!;
-    const { followups } = await call("start_task", { task_id: laundry.id });
-    expect(followups).toEqual([]);
+    expect(client.calls).toEqual(["group:daily", "group:daily", "group:daily"]);
     expect(client.puts).toEqual([]);
   });
 
@@ -254,26 +183,19 @@ describe("timer reminders over MCP", () => {
     expect(syncs()).toBe(1);
     expect(client.groups[0].find((r) => r.key.startsWith("due:"))!.at).toBe("2026-11-15T08:00:00.000Z");
 
-    const chore = {
-      name: "Water the plants",
-      recurrence: { every: "day" },
-      remind_at: "17:00",
-      remind_level: "loud",
-    };
+    const chore = { name: "Water the plants", recurrence: { every: "day" } };
     let res = await app.inject({ method: "POST", url: "/jeeves/ui/api/chores", headers: auth, payload: chore });
     expect(res.statusCode).toBe(201);
     expect(syncs()).toBe(2);
-    expect(client.groups[1].some((r) => r.key.startsWith("chore:") && r.level === "loud")).toBe(true);
 
     res = await app.inject({
       method: "POST",
       url: "/jeeves/ui/api/chores/water-the-plants",
       headers: auth,
-      payload: { ...chore, remind_at: null },
+      payload: { ...chore, effort: 3 },
     });
     expect(res.statusCode).toBe(200);
     expect(syncs()).toBe(3);
-    expect(client.groups[2].some((r) => r.key.startsWith("chore:"))).toBe(false);
 
     await app.inject({ method: "POST", url: "/jeeves/ui/api/chores/water-the-plants/delete", headers: auth });
     expect(syncs()).toBe(4);
@@ -321,36 +243,41 @@ describe("httpReminderClient", () => {
   });
 });
 
-describe("chore reminder fields", () => {
-  it("round-trip through the API and the seed", async () => {
+describe("legacy chore fields", () => {
+  it("are accepted from the API and the seed, dropped, and warned about", async () => {
     const dir = mkdtempSync(join(tmpdir(), "todo-"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       const store = new TodoStore();
       const app = buildApp({ store, token: "secret", timeZone: TZ });
       const auth = { authorization: "Bearer secret" };
-      const body = { name: "Bins", recurrence: { every: "week", on: ["mon"] }, remind_at: "19:15", remind_level: "alarm" };
-      let res = await app.inject({ method: "POST", url: "/jeeves/ui/api/chores", headers: auth, payload: body });
+      const body = {
+        name: "Laundry",
+        recurrence: { every: "week", on: ["mon"] },
+        completion_mode: "timer",
+        timer_steps: [{ after_minutes: 75, message: "Dryer" }],
+        remind_at: "19:15",
+        remind_level: "alarm",
+      };
+      const res = await app.inject({ method: "POST", url: "/jeeves/ui/api/chores", headers: auth, payload: body });
       expect(res.statusCode).toBe(201);
-      expect(res.json().chore).toMatchObject({ remind_at: "19:15", remind_level: "alarm" });
-      res = await app.inject({ method: "POST", url: "/jeeves/ui/api/chores", headers: auth, payload: { ...body, name: "Bad", remind_at: "7pm" } });
-      expect(res.statusCode).toBe(400);
-      res = await app.inject({ method: "POST", url: "/jeeves/ui/api/chores", headers: auth, payload: { ...body, name: "Bad2", remind_level: "siren" } });
-      expect(res.statusCode).toBe(400);
-      res = await app.inject({ method: "GET", url: "/jeeves/api/chores", headers: auth });
-      expect(res.json().chores[0]).toMatchObject({ remind_at: "19:15", remind_level: "alarm" });
+      expect(res.json().chore).toMatchObject({ completion_mode: "reply" });
+      expect(res.json().chore).not.toHaveProperty("timer_steps");
+      expect(res.json().chore).not.toHaveProperty("remind_at");
 
       const yaml = join(dir, "c.yaml");
-      const { writeFileSync } = await import("node:fs");
-      writeFileSync(yaml, 'chores:\n  - { id: x, name: X, recurrence: { every: day }, remind_at: "08:05", remind_level: loud }\n');
+      writeFileSync(yaml, 'chores:\n  - { id: x, name: X, recurrence: { every: day }, completion_mode: timer, timer_steps: [{ after_minutes: 5, message: hi }], remind_at: "08:05" }\n');
       const s2 = new TodoStore();
       seedFromFile(s2, yaml);
-      expect(s2.getChore("x")).toMatchObject({ remind_at: "08:05", remind_level: "loud" });
+      expect(s2.getChore("x")).toMatchObject({ completion_mode: "reply" });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("Chore x has timer_steps"));
     } finally {
+      warn.mockRestore();
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("are added to an old database by the guarded ALTER", () => {
+  it("old rows load as reply chores, are flagged, and are cleaned when saved", () => {
     const dir = mkdtempSync(join(tmpdir(), "todo-"));
     try {
       const path = join(dir, "old.db");
@@ -360,12 +287,13 @@ describe("chore reminder fields", () => {
         est_minutes INTEGER NOT NULL DEFAULT 10, how_to TEXT NOT NULL DEFAULT '[]',
         completion_mode TEXT NOT NULL DEFAULT 'reply', timer_steps TEXT NOT NULL DEFAULT '[]', goal TEXT,
         active INTEGER NOT NULL DEFAULT 1);
-        INSERT INTO chores (id, name, recurrence) VALUES ('old', 'Old chore', '{"every":"day"}');`);
+        INSERT INTO chores (id, name, recurrence, completion_mode, timer_steps) VALUES ('old', 'Old chore', '{"every":"day"}', 'timer', '[{"after_minutes":5,"message":"x"}]');`);
       old.close();
       const store = new TodoStore(path);
-      expect(store.getChore("old")).toMatchObject({ remind_at: null, remind_level: null });
-      store.upsertChore({ ...store.getChore("old")!, remind_at: "10:00", remind_level: "loud" });
-      expect(store.getChore("old")).toMatchObject({ remind_at: "10:00", remind_level: "loud" });
+      expect(store.getChore("old")).toMatchObject({ completion_mode: "reply" });
+      expect(store.legacyTimerChores()).toEqual(["old"]);
+      store.upsertChore(store.getChore("old")!);
+      expect(store.legacyTimerChores()).toEqual([]);
       new TodoStore(path); // a second open must not try to ALTER again
     } finally {
       rmSync(dir, { recursive: true, force: true });

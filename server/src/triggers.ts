@@ -93,6 +93,7 @@ export function blockReason(workflow: Workflow, trigger: Trigger, event: EventRo
       if (mins < workflow.cooldown) return `cooldown: fired ${Math.round(mins)} min ago`;
     }
   }
+  if (db.hasWaitingRun(workflow.id)) return "already waiting";
   return null;
 }
 

@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import Fastify from "fastify";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -27,7 +30,6 @@ afterEach(async () => {
 const DEFAULTS = {
   carry_over_days: 3,
   default_snooze_minutes: 15,
-  followup_nudges: true,
   emit_events: true,
   daily_due_enabled: true,
   daily_due_time: "09:00",
@@ -35,8 +37,6 @@ const DEFAULTS = {
   evening_update_enabled: true,
   evening_update_time: "21:00",
   evening_update_level: "notify",
-  timer_level: "alarm",
-  chore_default_level: "notify",
 };
 
 const newChore = {
@@ -58,8 +58,9 @@ describe("/jeeves manifest and auth", () => {
       display_name: "Chores",
       version: "0.1.0",
       ui: { path: "/jeeves/ui", title: "Chores" },
-      events: [expect.objectContaining({ type: "task_started" }), expect.objectContaining({ type: "task_completed" })],
-      steps: expect.objectContaining({ list_due_tasks: expect.objectContaining({ title: "List due chores" }) }),
+      events: [expect.objectContaining({ type: "task_started" }), expect.objectContaining({ type: "task_completed" }), expect.objectContaining({ type: "task_skipped" })],
+      steps: expect.objectContaining({ list_due_tasks: expect.objectContaining({ title: "List due chores" }), get_task: expect.objectContaining({ title: "Get today's task for a chore" }) }),
+      item_actions: expect.arrayContaining([expect.objectContaining({ id: "start" })]),
       views: [expect.objectContaining({ id: "today" })],
       settings_schema: { type: "object" },
     });
@@ -68,15 +69,12 @@ describe("/jeeves manifest and auth", () => {
         "carry_over_days",
         "default_snooze_minutes",
         "emit_events",
-        "followup_nudges",
         "daily_due_enabled",
         "daily_due_time",
         "daily_due_level",
         "evening_update_enabled",
         "evening_update_time",
         "evening_update_level",
-        "timer_level",
-        "chore_default_level",
       ].sort(),
     );
     for (const p of Object.values(m.settings_schema.properties) as Record<string, unknown>[]) {
@@ -151,17 +149,44 @@ describe("/jeeves/settings", () => {
     [{ carry_over_days: "3" }],
     [{ carry_over_days: 2.5 }],
     [{ default_snooze_minutes: 0 }],
-    [{ followup_nudges: "yes" }],
     [{ surprise: true }],
     [{ daily_due_time: "25:00" }],
     [{ evening_update_time: "9:00" }],
-    [{ timer_level: "siren" }],
   ])("rejects %j with 400 and keeps the old values", async (payload) => {
     const { app, store } = setup();
     const res = await app.inject({ method: "PUT", url: "/jeeves/settings", headers: auth, payload });
     expect(res.statusCode).toBe(400);
     expect(res.json().error).toBeDefined();
     expect(store.settings().carry_over_days).toBe(3);
+  });
+});
+
+describe("legacy settings", () => {
+  it("are accepted and dropped without resetting the other values", async () => {
+    const { app, store } = setup();
+    const res = await app.inject({
+      method: "PUT",
+      url: "/jeeves/settings",
+      headers: auth,
+      payload: { timer_level: "alarm", followup_nudges: true, chore_default_level: "loud", carry_over_days: 5 },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().values).toMatchObject({ carry_over_days: 5 });
+    expect(res.json().values).not.toHaveProperty("timer_level");
+    expect(store.settings().carry_over_days).toBe(5);
+  });
+
+  it("stored legacy rows do not reset the rest to defaults on load", () => {
+    const dir = mkdtempSync(join(tmpdir(), "todo-"));
+    try {
+      const path = join(dir, "t.db");
+      const first = new TodoStore(path);
+      first.db.prepare("INSERT INTO settings (key, value) VALUES ('timer_level', '\"alarm\"'), ('carry_over_days', '7')").run();
+      first.db.close();
+      expect(new TodoStore(path).settings().carry_over_days).toBe(7);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -201,7 +226,6 @@ describe("chore manager UI", () => {
     expect(res.json().chore).toMatchObject({
       id: "water-the-plants",
       completion_mode: "reply",
-      timer_steps: [],
       active: true,
     });
 
@@ -365,6 +389,14 @@ describe("task events", () => {
     for (let i = 0; i < 100 && !cond(); i++) await new Promise((r) => setTimeout(r, 20));
   }
 
+  it("posts task_skipped when a task is skipped", async () => {
+    const seen: [TaskEventType, TaskEventPayload][] = [];
+    const { app } = setup({ events: (t, p) => seen.push([t, p]) });
+    const [first] = (await app.inject({ method: "GET", url: "/jeeves/views/today", headers: auth })).json().items;
+    await app.inject({ method: "POST", url: "/jeeves/actions", headers: auth, payload: { item: first.id, action: "skip" } });
+    expect(seen.map(([t, p]) => [t, String(p.task_id)])).toEqual([["task_skipped", first.id]]);
+  });
+
   it("posts task_started and task_completed to Jeeves with the plugin token", async () => {
     const jeeves = await fakeJeeves();
     const { call, laundry } = await todoWithMcp(jeeves.url);
@@ -385,19 +417,19 @@ describe("task events", () => {
     ]);
   });
 
-  it("does not send events when emit_events is off, and drops follow-ups when followup_nudges is off", async () => {
+  it("does not send events when emit_events is off", async () => {
     const jeeves = await fakeJeeves();
     const { app, call, laundry } = await todoWithMcp(jeeves.url);
     const res = await app.inject({
       method: "PUT",
       url: "/jeeves/settings",
       headers: auth,
-      payload: { emit_events: false, followup_nudges: false },
+      payload: { emit_events: false },
     });
     expect(res.statusCode).toBe(200);
 
     const started = await call("start_task", { task_id: laundry.id });
-    expect(started.followups).toEqual([]);
+    expect(started.state).toBe("started");
     await call("complete_task", { task_id: laundry.id });
     await new Promise((r) => setTimeout(r, 100));
     expect(jeeves.received).toEqual([]);
@@ -414,7 +446,7 @@ describe("task events", () => {
   it("does not fail the tool call when Jeeves is unreachable", async () => {
     const { call, laundry } = await todoWithMcp("http://127.0.0.1:1");
     const started = await call("start_task", { task_id: laundry.id });
-    expect(started.task.state).toBe("started");
+    expect(started.state).toBe("started");
   });
 
   it("uses an injected poster", async () => {

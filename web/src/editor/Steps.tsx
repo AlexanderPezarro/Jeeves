@@ -3,6 +3,7 @@ import { isObjectSchema, JsonTextarea, SchemaForm } from "../SchemaForm";
 import { STEP_TYPES, stepType, type CondExpr, type Effort, type PhoneAction, type Path, type Step, type StepType } from "../types";
 import { Field, FieldIssues } from "../ui";
 import { CondExprEditor } from "./Conditions";
+import { ListenerEditor } from "./Listener";
 import { BUILTIN_CLAUDE_TOOLS, uniqueId, useEditorData } from "./context";
 
 const TYPE_LABEL: Record<StepType, string> = {
@@ -163,12 +164,78 @@ function UnknownStep({ step, onChange }: { step: Step; onChange: (s: Step) => vo
 function StepBody({ step, onChange, path }: { step: Step; onChange: (s: Step) => void; path: Path }) {
   if ("message" in step) {
     const p = [...path, "message"];
+    const m = step.message ?? { text: "" };
+    const setMessage = (next: typeof m) => onChange({ ...step, message: next });
+    const waits = !!m.until;
     return (
-      <Field label="Message text" path={[...p, "text"]} hint={TEMPLATE_HINT}>
-        <textarea aria-label="Message text" rows={3} value={step.message?.text ?? ""} onChange={(e) => onChange({ ...step, message: { ...step.message, text: e.target.value } })} />
-        {step.message?.items && <span className="hint">This message also has {step.message.items.length} fixed item(s); edit them in the YAML tab.</span>}
-        <FieldIssues path={p} />
-      </Field>
+      <div className="stack-sm">
+        <Field label="Message text" path={[...p, "text"]} hint={TEMPLATE_HINT}>
+          <textarea aria-label="Message text" rows={3} value={m.text ?? ""} onChange={(e) => setMessage({ ...m, text: e.target.value })} />
+          {m.items && <span className="hint">This message also has {m.items.length} fixed item(s); edit them in the YAML tab.</span>}
+          <FieldIssues path={p} />
+        </Field>
+        <Field label="Level" path={[...p, "level"]}>
+          <select
+            aria-label="Message level"
+            value={m.level ?? ""}
+            onChange={(e) => {
+              const { level: _l, ...rest } = m;
+              setMessage(e.target.value ? { ...rest, level: e.target.value as "notify" | "loud" | "alarm" } : rest);
+            }}
+          >
+            <option value="">Default</option>
+            <option value="notify">Notify</option>
+            <option value="loud">Loud</option>
+            <option value="alarm">Alarm</option>
+          </select>
+        </Field>
+        <label className="check">
+          <input
+            type="checkbox"
+            aria-label="Repeat until"
+            checked={waits}
+            onChange={(e) => {
+              const { repeat: _r, until: _u, ...rest } = m;
+              setMessage(e.target.checked ? { ...rest, repeat: { every_minutes: 10 }, until: { event: "todo.task_started" } } : rest);
+            }}
+          />
+          Repeat until something happens (the run waits for it)
+        </label>
+        {waits && (
+          <div className="stack-sm">
+            <div className="row gap wrap">
+              <Field label="Every (minutes)" path={[...p, "repeat", "every_minutes"]}>
+                <input
+                  aria-label="Repeat every minutes"
+                  type="number"
+                  min={1}
+                  max={1440}
+                  value={m.repeat?.every_minutes ?? ""}
+                  onChange={(e) => setMessage({ ...m, repeat: { ...m.repeat, every_minutes: Math.max(1, Math.round(Number(e.target.value))) } })}
+                />
+              </Field>
+              <Field label="At most (times, optional)" path={[...p, "repeat", "max"]}>
+                <input
+                  aria-label="Repeat at most"
+                  type="number"
+                  min={1}
+                  value={m.repeat?.max ?? ""}
+                  onChange={(e) => {
+                    const { max: _x, ...rest } = m.repeat ?? { every_minutes: 10 };
+                    setMessage({ ...m, repeat: e.target.value === "" ? rest : { ...rest, max: Math.max(1, Math.round(Number(e.target.value))) } });
+                  }}
+                />
+              </Field>
+            </div>
+            <div className="field">
+              <span className="field-label">Until this event happens</span>
+              <ListenerEditor value={m.until!} path={[...p, "until"]} onChange={(l) => setMessage({ ...m, until: l })} />
+              <span className="hint">Values can be templates like {"{{steps.task.id}}"}.</span>
+            </div>
+            <FieldIssues path={[...p, "repeat"]} />
+          </div>
+        )}
+      </div>
     );
   }
   if ("claude" in step) return <ClaudeStep step={step} onChange={onChange} path={path} />;

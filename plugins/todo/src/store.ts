@@ -1,13 +1,6 @@
 import Database from "better-sqlite3";
 import { isDue, type Recurrence } from "./recurrence.js";
-import { DEFAULT_SETTINGS, settingsSchema, type Level, type Settings } from "./settings.js";
-
-export interface TimerStep {
-  /** Minutes after the previous step (or after the task was started). */
-  after_minutes: number;
-  /** What to tell the user when this step is due, e.g. "Move the washing to the dryer". */
-  message: string;
-}
+import { DEFAULT_SETTINGS, dropLegacy, settingsSchema, type Settings } from "./settings.js";
 
 export interface Chore {
   id: string;
@@ -18,15 +11,10 @@ export interface Chore {
   /** Estimated hands-on minutes. */
   est_minutes: number;
   how_to: string[];
-  /** How completion is detected: user reply, timed follow-ups, or a sensor event. */
-  completion_mode: "reply" | "timer" | "sensor";
-  timer_steps: TimerStep[];
+  /** How completion is detected: user reply or a sensor event. */
+  completion_mode: "reply" | "sensor";
   goal?: string;
   active: boolean;
-  /** Local time (HH:MM) for a per-chore reminder; null/absent means none. */
-  remind_at?: string | null;
-  /** Level for that reminder; null/absent falls back to the chore_default_level setting. */
-  remind_level?: Level | null;
 }
 
 export type TaskState = "pending" | "started" | "done" | "skipped";
@@ -83,7 +71,10 @@ CREATE TABLE IF NOT EXISTS deleted_chores (
 );
 `;
 
-/** Columns added after the first release; applied with a guarded ALTER on old databases. */
+/**
+ * Columns added after the first release; applied with a guarded ALTER on old databases. remind_at,
+ * remind_level and timer_steps are no longer used (timing lives in workflows) but stay in old databases.
+ */
 const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["chores", "remind_at", "TEXT"],
   ["chores", "remind_level", "TEXT"],
@@ -116,7 +107,7 @@ export class TodoStore {
    * Throws a ZodError on unknown keys or bad values.
    */
   setSettings(values: unknown): Settings {
-    const parsed = settingsSchema.parse(values ?? {});
+    const parsed = settingsSchema.parse(dropLegacy(values ?? {}));
     const insert = this.db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)");
     this.db.transaction(() => {
       this.db.prepare("DELETE FROM settings").run();
@@ -130,7 +121,7 @@ export class TodoStore {
     const rows = this.db.prepare("SELECT key, value FROM settings").all() as { key: string; value: string }[];
     const raw: Record<string, unknown> = {};
     for (const r of rows) raw[r.key] = JSON.parse(r.value);
-    const parsed = settingsSchema.safeParse(raw);
+    const parsed = settingsSchema.safeParse(dropLegacy(raw));
     return parsed.success ? parsed.data : { ...DEFAULT_SETTINGS };
   }
 
@@ -174,23 +165,28 @@ export class TodoStore {
   upsertChore(c: Chore): void {
     this.db
       .prepare(
-        `INSERT INTO chores (id, name, recurrence, effort, est_minutes, how_to, completion_mode, timer_steps, goal, active, remind_at, remind_level)
-         VALUES (@id, @name, @recurrence, @effort, @est_minutes, @how_to, @completion_mode, @timer_steps, @goal, @active, @remind_at, @remind_level)
+        `INSERT INTO chores (id, name, recurrence, effort, est_minutes, how_to, completion_mode, goal, active)
+         VALUES (@id, @name, @recurrence, @effort, @est_minutes, @how_to, @completion_mode, @goal, @active)
          ON CONFLICT(id) DO UPDATE SET name=excluded.name, recurrence=excluded.recurrence, effort=excluded.effort,
            est_minutes=excluded.est_minutes, how_to=excluded.how_to, completion_mode=excluded.completion_mode,
-           timer_steps=excluded.timer_steps, goal=excluded.goal, active=excluded.active,
-           remind_at=excluded.remind_at, remind_level=excluded.remind_level`,
+           goal=excluded.goal, active=excluded.active, timer_steps='[]', remind_at=NULL, remind_level=NULL`,
       )
       .run({
-        ...c,
+        id: c.id,
+        name: c.name,
+        effort: c.effort,
+        est_minutes: c.est_minutes,
+        completion_mode: c.completion_mode,
         recurrence: JSON.stringify(c.recurrence),
         how_to: JSON.stringify(c.how_to),
-        timer_steps: JSON.stringify(c.timer_steps),
         goal: c.goal ?? null,
         active: c.active ? 1 : 0,
-        remind_at: c.remind_at ?? null,
-        remind_level: c.remind_level ?? null,
       });
+  }
+
+  /** Ids of chores still carrying legacy timer steps (written by an older version). */
+  legacyTimerChores(): string[] {
+    return (this.db.prepare("SELECT id FROM chores WHERE timer_steps IS NOT NULL AND timer_steps NOT IN ('', '[]')").all() as { id: string }[]).map((r) => r.id);
   }
 
   getChore(id: string): Chore | undefined {
@@ -200,6 +196,28 @@ export class TodoStore {
 
   listChores(): Chore[] {
     return (this.db.prepare("SELECT * FROM chores ORDER BY name").all() as Record<string, unknown>[]).map(rowToChore);
+  }
+
+  /**
+   * The instance for one chore on `date`, in the shape of listDue rows, whatever its state (so a
+   * workflow can branch on done/skipped). Creates it if the chore is active and due that day;
+   * null if there is no such instance.
+   */
+  getTaskFor(choreId: string, date: string): DueTask | null {
+    const chore = this.getChore(choreId);
+    if (!chore) return null;
+    if (chore.active && isDue(chore.recurrence, date)) {
+      this.db.prepare("INSERT OR IGNORE INTO task_instances (chore_id, due_date) VALUES (?, ?)").run(choreId, date);
+    }
+    const r = this.db
+      .prepare(
+        `SELECT t.*, c.name, c.effort, c.est_minutes, c.how_to, c.completion_mode,
+                CAST(julianday(?) - julianday(t.due_date) AS INTEGER) AS overdue_days
+         FROM task_instances t JOIN chores c ON c.id = t.chore_id WHERE t.chore_id = ? AND t.due_date = ?`,
+      )
+      .get(date, choreId, date) as Record<string, unknown> | undefined;
+    if (!r) return null;
+    return { ...(r as unknown as DueTask), how_to: JSON.parse(r.how_to as string) as string[], completion_mode: r.completion_mode === "sensor" ? "sensor" : "reply" };
   }
 
   getTask(id: number): TaskInstance | undefined {
@@ -273,12 +291,10 @@ function rowToChore(row: Record<string, unknown>): Chore {
     effort: row.effort as number,
     est_minutes: row.est_minutes as number,
     how_to: JSON.parse(row.how_to as string),
-    completion_mode: row.completion_mode as Chore["completion_mode"],
-    timer_steps: JSON.parse(row.timer_steps as string),
+    // A stored "timer" (older versions) is a plain reply chore now.
+    completion_mode: row.completion_mode === "sensor" ? "sensor" : "reply",
     goal: (row.goal as string | null) ?? undefined,
     active: row.active === 1,
-    remind_at: (row.remind_at as string | null) ?? null,
-    remind_level: (row.remind_level as Level | null) ?? null,
   };
 }
 

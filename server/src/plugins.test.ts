@@ -161,6 +161,19 @@ describe("plugin views and actions", () => {
     expect((await w.app.inject({ method: "GET", url: "/views/fake/list" })).statusCode).toBe(401);
   });
 
+  it("ending a nagging workflow when its item is resolved", async () => {
+    const w = await world();
+    await w.host.refreshManifest("fake");
+    const id = w.db.startWorkflowRun({ workflow_id: "wf", trigger: "event", event_id: null, dry_run: false, definition: {}, local_date: "2026-11-14" });
+    const step = w.db.startStep({ workflow_run_id: id, step_id: "nag", path: "0", type: "message" });
+    w.db.finishStep(step, { status: "waiting", output: { sent: 1 } });
+    w.db.finishWorkflowRun(id, "waiting");
+    w.db.addJob(new Date(Date.now() + 600_000), "workflow_nag", { workflow_run_id: id, step_path: "0", sent: 1, plugin: "fake", item_id: "a" });
+    await w.app.inject({ method: "POST", url: "/plugins/fake/actions", headers: w.headers, payload: { item: "a", action: "ack" } });
+    expect(w.db.getWorkflowRun(id)).toMatchObject({ status: "cancelled", error: "item resolved" });
+    expect(w.db.pendingJobs("workflow_nag")).toHaveLength(0);
+  });
+
   it("forwards a button tap, cancels follow-ups when the item is resolved, and passes on the plugin's 4xx", async () => {
     const w = await world();
     await w.host.refreshManifest("fake");

@@ -40,14 +40,14 @@ export const CHAT_REPLY: WorkflowInput = {
   steps: [{ id: "reply", claude: { prompt: 'I wrote: "{{event.text}}". Reply once.', history: true } }],
 };
 
-const READ_ONLY = new Set(["list_due_tasks", "get_chore"]);
+const READ_ONLY = new Set(["list_due_tasks", "get_chore", "get_task"]);
 
 /** A to-do plugin stand-in with two tasks; laundry has a timed follow-up. */
 export class FakeTodo implements PluginHost {
   calls: { plugin: string; tool: string; args: Record<string, unknown> }[] = [];
   constructor(private readonly clock: { now: Date }) {}
   async listTools(): Promise<PluginTool[]> {
-    return ["list_due_tasks", "get_chore", "start_task", "complete_task", "skip_task", "snooze_task"].map((tool) => ({
+    return ["list_due_tasks", "get_chore", "get_task", "start_task", "complete_task", "skip_task", "snooze_task"].map((tool) => ({
       name: `todo__${tool}`,
       plugin: "todo",
       tool,
@@ -80,6 +80,7 @@ export class FakeTodo implements PluginHost {
       const at = new Date(this.clock.now.getTime() + 75 * 60_000).toISOString();
       return { isError: false, text: JSON.stringify({ task: { id: args.task_id }, followups: [{ at, message: "Move it to the dryer" }] }) };
     }
+    if (tool === "get_task") return { isError: false, text: JSON.stringify({ id: 12, name: "Laundry", state: "pending" }) };
     if (tool === "explode") return { isError: true, text: "kaboom" };
     return { isError: false, text: JSON.stringify({ id: args.task_id, state: "done" }) };
   }

@@ -74,7 +74,7 @@ describe("e2e: todo.task_started -> wait -> message", () => {
     const tools = await host.listTools();
     expect(tools.find((t) => t.name === "todo__list_due_tasks")?.read_only).toBe(true);
     await host.idle();
-    expect(host.manifest("todo")).toMatchObject({ events: ["task_started", "task_completed"], views: [{ id: "today", title: "Today" }] });
+    expect(host.manifest("todo")).toMatchObject({ events: ["task_started", "task_completed", "task_skipped"], views: [{ id: "today", title: "Today" }] });
 
     // The app's Today tab: the plugin's view, relayed by Jeeves as generic items.
     const headers = await pair(jeeves);

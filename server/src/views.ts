@@ -12,7 +12,13 @@ const ID = /^[a-z0-9_.-]{1,64}$/;
  * forwards button taps to `POST <plugin>/jeeves/actions`. When the plugin answers `resolved: true`
  * (e.g. a task is done), pending follow-ups about that item are cancelled.
  */
-export function registerViewRoutes(app: FastifyInstance, { plugins, db, now = () => new Date() }: { plugins: ManagedPluginHost; db: Db; now?: () => Date }) {
+export function registerViewRoutes(app: FastifyInstance, {
+    plugins,
+    db,
+    now = () => new Date(),
+    cancelRun,
+  }: { plugins: ManagedPluginHost; db: Db; now?: () => Date; cancelRun?: (runId: number, reason: string) => unknown },
+) {
   app.get("/views", async () => ({ views: plugins.views() }));
 
   app.get("/views/:plugin/:id", async (req, reply) => {
@@ -44,7 +50,14 @@ export function registerViewRoutes(app: FastifyInstance, { plugins, db, now = ()
         // The plugin's own 4xx (unknown item, bad transition) is passed on; anything else is a 502.
         return reply.code(res.status < 500 ? res.status : 502).send({ error: "plugin_error", message: String(answer.error ?? `${plugin} answered ${res.status}`) });
       }
-      const cancelled = answer.resolved === true ? db.cancelJobsForItem(plugin, body.data.item, now()) : 0;
+      let cancelled = 0;
+      if (answer.resolved === true) {
+        cancelled = db.cancelJobsForItem(plugin, body.data.item, now());
+        // A workflow nagging about this item has nothing left to wait for: end it, or it would block its
+        // workflow for good ("already waiting"). If the matching todo.* event arrives at the same moment and
+        // resumes the run first, the run ends either way, so whichever lands first wins.
+        for (const n of db.nagRunsForItem(plugin, body.data.item)) cancelRun?.(n.run_id, "item resolved");
+      }
       db.addActivity("item_action", plugin, { item: body.data.item, action: body.data.action, cancelled_followups: cancelled }, now());
       return { ok: true, message: typeof answer.message === "string" ? answer.message : null, resolved: answer.resolved === true };
     } catch (e) {

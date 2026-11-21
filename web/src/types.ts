@@ -31,6 +31,12 @@ export interface When {
   conditions?: Condition[];
 }
 
+/** An event a paused run waits for (message `until`, workflow `cancel_on`). */
+export interface Listener {
+  event: string;
+  conditions?: Condition[];
+}
+
 export type Trigger = { event: string; when?: When } | { schedule: string; when?: When };
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -38,7 +44,16 @@ export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 export type Step =
   | { id: string; call: { plugin: string; tool: string; args?: Record<string, unknown> } }
   | { id: string; claude: { prompt: string; tools?: string[]; model?: string; effort?: Effort; history?: boolean } }
-  | { id: string; message: { text: string; items?: unknown[] } }
+  | {
+      id: string;
+      message: {
+        text: string;
+        items?: unknown[];
+        level?: "notify" | "loud" | "alarm";
+        repeat?: { every_minutes: number; max?: number };
+        until?: Listener;
+      };
+    }
   | { id: string; wait: { minutes: number } | { until: string } }
   | { id: string; if: CondExpr; then: Step[]; else?: Step[] }
   | { id: string; stop: { reason?: string } | null }
@@ -64,6 +79,7 @@ export interface WorkflowDoc {
   cooldown?: "daily" | number;
   notify_on_failure?: boolean;
   triggers: Trigger[];
+  cancel_on?: Listener[];
   steps: Step[];
   [extra: string]: unknown;
 }

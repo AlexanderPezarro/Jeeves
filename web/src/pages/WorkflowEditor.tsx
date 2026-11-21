@@ -3,6 +3,7 @@ import { parseDocument } from "yaml";
 import { api, ApiError, StaleError, ValidationError } from "../api";
 import { collectFieldPaths, collectStepIds, EditorDataContext, FIELD_PATHS_LIST, type EditorData } from "../editor/context";
 import { SimulatePanel } from "../editor/Simulate";
+import { ListenerEditor } from "../editor/Listener";
 import { StepList } from "../editor/Steps";
 import { TriggersEditor } from "../editor/Triggers";
 import { applyToYaml, parseWorkflowYaml, toYaml } from "../editor/yamlSync";
@@ -308,6 +309,29 @@ export function WorkflowEditorPage({ id, isNew }: { id: string; isNew: boolean }
               <section className="card">
                 <h2>Triggers</h2>
                 <TriggersEditor value={draft.triggers} onChange={(t) => editForm({ ...draft, triggers: t })} />
+              </section>
+              <section className="card">
+                <h2>Cancel the run when…</h2>
+                <div className="stack-sm">
+                  <div className="hint">If the run is paused (waiting or repeating a message) and one of these events happens, it ends.</div>
+                  {(draft.cancel_on ?? []).map((l, i) => (
+                    <ListenerEditor
+                      key={i}
+                      value={l}
+                      path={["cancel_on", i]}
+                      onChange={(nl) => editForm({ ...draft, cancel_on: (draft.cancel_on ?? []).map((x, j) => (j === i ? nl : x)) })}
+                      onRemove={() => {
+                        const next = (draft.cancel_on ?? []).filter((_, j) => j !== i);
+                        const { cancel_on: _c, ...rest } = draft;
+                        editForm(next.length ? { ...rest, cancel_on: next } : (rest as typeof draft));
+                      }}
+                    />
+                  ))}
+                  <button type="button" className="small-btn" onClick={() => editForm({ ...draft, cancel_on: [...(draft.cancel_on ?? []), { event: "wifi.disconnected" }] })}>
+                    + Event
+                  </button>
+                  <FieldIssues path={["cancel_on"]} />
+                </div>
               </section>
               <section className="card">
                 <h2>Steps</h2>

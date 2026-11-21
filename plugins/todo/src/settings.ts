@@ -16,7 +16,6 @@ export const settingsSchema = z
   .object({
     carry_over_days: z.number().int().min(0).max(30).default(3),
     default_snooze_minutes: z.number().int().min(1).max(24 * 60).default(15),
-    followup_nudges: z.boolean().default(true),
     emit_events: z.boolean().default(true),
     daily_due_enabled: z.boolean().default(true),
     daily_due_time: hhmm("09:00"),
@@ -24,10 +23,19 @@ export const settingsSchema = z
     evening_update_enabled: z.boolean().default(true),
     evening_update_time: hhmm("21:00"),
     evening_update_level: z.enum(LEVELS).default("notify"),
-    timer_level: z.enum(LEVELS).default("alarm"),
-    chore_default_level: z.enum(LEVELS).default("notify"),
   })
   .strict();
+
+/** Settings from older versions. Still accepted on input (and dropped) so they can't reset everything else. */
+export const LEGACY_SETTING_KEYS = ["followup_nudges", "timer_level", "chore_default_level"] as const;
+
+/** `raw` without the legacy keys. Anything else (including unknown keys) is left for the strict schema to judge. */
+export function dropLegacy(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+  const out = { ...(raw as Record<string, unknown>) };
+  for (const k of LEGACY_SETTING_KEYS) delete out[k];
+  return out;
+}
 
 export type Settings = z.infer<typeof settingsSchema>;
 
@@ -47,12 +55,6 @@ export const settingsJsonSchema = {
       title: "Default snooze (minutes)",
       description: "How long a task is hidden when it is snoozed without saying for how long. 1 to 1440.",
       default: DEFAULT_SETTINGS.default_snooze_minutes,
-    },
-    followup_nudges: {
-      type: "boolean",
-      title: "Timer follow-ups",
-      description: "Schedule a chore's timer steps as reminders when it is started (e.g. move the washing to the dryer).",
-      default: DEFAULT_SETTINGS.followup_nudges,
     },
     emit_events: {
       type: "boolean",
@@ -97,20 +99,6 @@ export const settingsJsonSchema = {
       description: "Notify is a normal notification, loud rings like an alarm sound, alarm takes over the screen.",
       enum: [...LEVELS],
       default: DEFAULT_SETTINGS.evening_update_level,
-    },
-    timer_level: {
-      type: "string",
-      title: "Timer step level",
-      description: "Notify is a normal notification, loud rings like an alarm sound, alarm takes over the screen.",
-      enum: [...LEVELS],
-      default: DEFAULT_SETTINGS.timer_level,
-    },
-    chore_default_level: {
-      type: "string",
-      title: "Default chore reminder level",
-      description: "Notify is a normal notification, loud rings like an alarm sound, alarm takes over the screen.",
-      enum: [...LEVELS],
-      default: DEFAULT_SETTINGS.chore_default_level,
     },
   },
 } as const;

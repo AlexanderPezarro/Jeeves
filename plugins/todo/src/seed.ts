@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import { parse } from "yaml";
 import { z } from "zod";
-import { HHMM, LEVELS } from "./settings.js";
 import type { Chore, TodoStore } from "./store.js";
 
 const weekday = z.enum(["mon", "tue", "wed", "thu", "fri", "sat", "sun"]);
@@ -24,21 +23,38 @@ export const choreSchema = z.object({
   effort: z.number().int().min(1).max(5).default(2),
   est_minutes: z.number().int().min(1).default(10),
   how_to: z.array(z.string()).default([]),
+  // "timer" and the three fields below are from older versions: accepted, then dropped (see legacyTimerNote).
   completion_mode: z.enum(["reply", "timer", "sensor"]).default("reply"),
-  timer_steps: z
-    .array(z.object({ after_minutes: z.number().int().min(1), message: z.string().min(1) }))
-    .default([]),
+  timer_steps: z.unknown().optional(),
   goal: z.string().optional(),
   active: z.boolean().default(true),
-  remind_at: z.string().regex(HHMM, "use HH:MM, 24 hour").nullish(),
-  remind_level: z.enum(LEVELS).nullish(),
+  remind_at: z.unknown().optional(),
+  remind_level: z.unknown().optional(),
 });
+
+type ChoreInput = z.infer<typeof choreSchema>;
+
+/** The chore as stored: legacy keys removed, completion_mode "timer" becomes "reply". */
+export function normalizeChore(c: ChoreInput): Chore {
+  const { timer_steps: _t, remind_at: _a, remind_level: _l, completion_mode, ...rest } = c;
+  return { ...rest, completion_mode: completion_mode === "sensor" ? "sensor" : "reply" } as Chore;
+}
+
+/** Logs a warning when an imported chore still has timer steps, which no longer do anything. */
+export function warnLegacyTimer(id: string, timerSteps: unknown): void {
+  if (Array.isArray(timerSteps) && timerSteps.length) {
+    console.warn(`Chore ${id} has timer_steps, which are no longer used; move the timing into a workflow`);
+  }
+}
 
 const fileSchema = z.object({ chores: z.array(choreSchema) });
 
 export function loadChores(path: string): Chore[] {
   const parsed = fileSchema.parse(parse(readFileSync(path, "utf8")));
-  return parsed.chores as Chore[];
+  return parsed.chores.map((c) => {
+    warnLegacyTimer(c.id, c.timer_steps);
+    return normalizeChore(c);
+  });
 }
 
 export interface SeedResult {
