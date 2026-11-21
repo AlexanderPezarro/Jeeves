@@ -13,8 +13,14 @@ android {
         applicationId = "app.jeeves"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // CI passes its run number so every build installs over the last and the in-app updater can
+        // tell them apart. Local builds are 1, so they always see the CI build as newer.
+        val ciBuild = System.getenv("JEEVES_VERSION_CODE")?.toIntOrNull()
+        versionCode = ciBuild ?: 1
+        versionName = if (ciBuild != null) "0.1.$ciBuild" else "0.1.0-dev"
+        buildConfigField("String", "GIT_SHA", "\"${System.getenv("GITHUB_SHA")?.take(7) ?: "local"}\"")
+        // Where CI publishes builds: a rolling pre-release holding version.json and the APK.
+        buildConfigField("String", "UPDATE_URL", "\"https://github.com/AlexanderPezarro/Jeeves/releases/download/android-latest\"")
     }
 
     signingConfigs {
@@ -45,6 +51,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 
@@ -61,6 +68,7 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.work:work-runtime-ktx:2.10.0")
 
     // UnifiedPush connector 3.x (push through a distributor app such as ntfy). Not build-tested here.

@@ -82,6 +82,16 @@ class Prefs(context: Context) {
         get() = sp.getLong("last_message_id", 0L)
         set(v) = sp.edit { putLong("last_message_id", v) }
 
+    /** When the app last checked GitHub for a newer build (epoch ms). */
+    var lastUpdateCheck: Long
+        get() = sp.getLong("last_update_check", 0L)
+        set(v) = sp.edit { putLong("last_update_check", v) }
+
+    /** The newest build already announced in a notification, so each one is announced once. */
+    var notifiedUpdateCode: Int
+        get() = sp.getInt("notified_update_code", 0)
+        set(v) = sp.edit { putInt("notified_update_code", v) }
+
     private companion object {
         val shownLock = Any()
     }

@@ -196,9 +196,24 @@ Authelia rule: without the cookie its API answers 401.
 
 ## The Android app
 
-CI builds a debug APK on every push: open the latest run under **Actions** and download
-`jeeves-debug-apk`. Or build it yourself with Android Studio (open `android/`) or
-`./gradlew assembleDebug`.
+Every push to `main` publishes the APK to the
+[`android-latest`](https://github.com/AlexanderPezarro/Jeeves/releases/tag/android-latest) pre-release
+(alongside a `version.json`), numbered by the CI run. Install it from there once; after that the app
+updates itself:
+
+- It checks on every open and every 6 hours in the background, and shows an **Update** banner (plus
+  a notification for builds found in the background). **Settings → App** shows the version and has
+  "Check for updates".
+- Tapping Update downloads the APK, checks its SHA-256 and hands it to Android. The first time,
+  Android asks you to allow Jeeves to install apps, then confirms the update. On Android 12+ later
+  updates may install without the prompt. Android stops the app to replace it, and a notification
+  says when the new version is in.
+- Android only accepts updates signed with the same key (the committed debug keystore), so builds
+  from elsewhere can't replace it.
+
+PR builds are still downloadable as the `jeeves-debug-apk` artifact under **Actions**. Or build it
+yourself with Android Studio (open `android/`) or `./gradlew assembleDebug`; local builds are
+version 1, so the app offers the latest CI build over them.
 
 First run:
 

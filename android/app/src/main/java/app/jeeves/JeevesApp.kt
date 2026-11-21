@@ -6,6 +6,7 @@ class JeevesApp : Application() {
     override fun onCreate() {
         super.onCreate()
         Notifications.createChannels(this)
+        Updater.createChannel(this)
         if (Prefs(this).isPaired) startBackground()
     }
 

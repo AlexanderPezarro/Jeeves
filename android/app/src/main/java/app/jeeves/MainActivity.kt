@@ -3,6 +3,7 @@ package app.jeeves
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import kotlinx.coroutines.launch
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.padding
@@ -24,11 +25,13 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.lifecycleScope
 import app.jeeves.ui.ActivityScreen
 import app.jeeves.ui.ChatScreen
 import app.jeeves.ui.PluginsScreen
 import app.jeeves.ui.SettingsScreen
 import app.jeeves.ui.TodayScreen
+import app.jeeves.ui.UpdateBanner
 import app.jeeves.ui.WorkflowsScreen
 
 class MainActivity : ComponentActivity() {
@@ -47,6 +50,7 @@ class MainActivity : ComponentActivity() {
             val colors = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) dynamicLightColorScheme(this) else lightColorScheme()
             MaterialTheme(colorScheme = colors) {
                 Scaffold(
+                    topBar = { UpdateBanner() },
                     bottomBar = {
                         NavigationBar {
                             NavigationBarItem(
@@ -96,6 +100,12 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Cheap (one small file from GitHub), and skipped while an update is downloading or installing.
+        lifecycleScope.launch { Updater.check(this@MainActivity) }
     }
 
     override fun onNewIntent(intent: Intent) {

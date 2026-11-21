@@ -152,7 +152,7 @@ class WifiCheckWorker(context: Context, params: WorkerParameters) : CoroutineWor
     }
 }
 
-/** Fetches new messages from Jeeves and shows them as notifications. Also re-checks Wi-Fi. */
+/** Fetches new messages from Jeeves and shows them as notifications. Also re-checks Wi-Fi and, every few hours, for app updates. */
 class PollWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         val prefs = Prefs(applicationContext)
@@ -164,6 +164,7 @@ class PollWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                 if (m.direction == "out") Notifications.show(applicationContext, m)
                 prefs.lastMessageId = maxOf(prefs.lastMessageId, m.id)
             }
+            Updater.checkInBackground(applicationContext)
             Result.success()
         } catch (e: Exception) {
             Log.w(TAG, "Poll failed", e)
