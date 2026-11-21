@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { parse } from "yaml";
 import { z } from "zod";
+import { HHMM, LEVELS } from "./settings.js";
 import type { Chore, TodoStore } from "./store.js";
 
 const weekday = z.enum(["mon", "tue", "wed", "thu", "fri", "sat", "sun"]);
@@ -29,6 +30,8 @@ export const choreSchema = z.object({
     .default([]),
   goal: z.string().optional(),
   active: z.boolean().default(true),
+  remind_at: z.string().regex(HHMM, "use HH:MM, 24 hour").nullish(),
+  remind_level: z.enum(LEVELS).nullish(),
 });
 
 const fileSchema = z.object({ chores: z.array(choreSchema) });

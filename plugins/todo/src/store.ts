@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { isDue, type Recurrence } from "./recurrence.js";
-import { DEFAULT_SETTINGS, settingsSchema, type Settings } from "./settings.js";
+import { DEFAULT_SETTINGS, settingsSchema, type Level, type Settings } from "./settings.js";
 
 export interface TimerStep {
   /** Minutes after the previous step (or after the task was started). */
@@ -23,6 +23,10 @@ export interface Chore {
   timer_steps: TimerStep[];
   goal?: string;
   active: boolean;
+  /** Local time (HH:MM) for a per-chore reminder; null/absent means none. */
+  remind_at?: string | null;
+  /** Level for that reminder; null/absent falls back to the chore_default_level setting. */
+  remind_level?: Level | null;
 }
 
 export type TaskState = "pending" | "started" | "done" | "skipped";
@@ -79,6 +83,12 @@ CREATE TABLE IF NOT EXISTS deleted_chores (
 );
 `;
 
+/** Columns added after the first release; applied with a guarded ALTER on old databases. */
+const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
+  ["chores", "remind_at", "TEXT"],
+  ["chores", "remind_level", "TEXT"],
+];
+
 export class ChoreExistsError extends Error {}
 
 export class TodoStore {
@@ -89,6 +99,10 @@ export class TodoStore {
     this.db = new Database(path);
     this.db.pragma("journal_mode = WAL");
     this.db.exec(SCHEMA);
+    for (const [table, column, type] of ADDED_COLUMNS) {
+      const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+      if (!cols.some((c) => c.name === column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    }
     this.cachedSettings = this.loadSettings();
   }
 
@@ -160,11 +174,12 @@ export class TodoStore {
   upsertChore(c: Chore): void {
     this.db
       .prepare(
-        `INSERT INTO chores (id, name, recurrence, effort, est_minutes, how_to, completion_mode, timer_steps, goal, active)
-         VALUES (@id, @name, @recurrence, @effort, @est_minutes, @how_to, @completion_mode, @timer_steps, @goal, @active)
+        `INSERT INTO chores (id, name, recurrence, effort, est_minutes, how_to, completion_mode, timer_steps, goal, active, remind_at, remind_level)
+         VALUES (@id, @name, @recurrence, @effort, @est_minutes, @how_to, @completion_mode, @timer_steps, @goal, @active, @remind_at, @remind_level)
          ON CONFLICT(id) DO UPDATE SET name=excluded.name, recurrence=excluded.recurrence, effort=excluded.effort,
            est_minutes=excluded.est_minutes, how_to=excluded.how_to, completion_mode=excluded.completion_mode,
-           timer_steps=excluded.timer_steps, goal=excluded.goal, active=excluded.active`,
+           timer_steps=excluded.timer_steps, goal=excluded.goal, active=excluded.active,
+           remind_at=excluded.remind_at, remind_level=excluded.remind_level`,
       )
       .run({
         ...c,
@@ -173,6 +188,8 @@ export class TodoStore {
         timer_steps: JSON.stringify(c.timer_steps),
         goal: c.goal ?? null,
         active: c.active ? 1 : 0,
+        remind_at: c.remind_at ?? null,
+        remind_level: c.remind_level ?? null,
       });
   }
 
@@ -260,6 +277,8 @@ function rowToChore(row: Record<string, unknown>): Chore {
     timer_steps: JSON.parse(row.timer_steps as string),
     goal: (row.goal as string | null) ?? undefined,
     active: row.active === 1,
+    remind_at: (row.remind_at as string | null) ?? null,
+    remind_level: (row.remind_level as Level | null) ?? null,
   };
 }
 
