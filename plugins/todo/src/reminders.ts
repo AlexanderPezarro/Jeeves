@@ -1,9 +1,9 @@
 import { localDate, type Chore, type DueTask, type TaskInstance, type TodoStore } from "./store.js";
 import type { Level } from "./settings.js";
 
-/** Same shape as the server's PlanItem (kept short: push payloads are size limited). */
+/** Same shape as the server's plan items (kept short: push payloads are size limited). `item_id` is the task id. */
 export interface ReminderItem {
-  task_id: number;
+  item_id: string;
   title: string;
   minutes?: number;
   steps?: string[];
@@ -126,7 +126,7 @@ export class ReminderScheduler {
     const today = localDate(now, this.timeZone);
     const open = this.store.listDue(today, now).filter((t) => t.state === "pending" || t.state === "started");
     const at = (hhmm: string) => zonedTime(today, hhmm, this.timeZone).toISOString();
-    const brief = (t: DueTask): ReminderItem => ({ task_id: t.id, title: t.name, minutes: t.est_minutes });
+    const brief = (t: DueTask): ReminderItem => ({ item_id: String(t.id), title: t.name, minutes: t.est_minutes });
     const out: Reminder[] = [];
 
     if (s.daily_due_enabled && open.length > 0) {
@@ -210,7 +210,7 @@ export class ReminderScheduler {
         at: iso,
         level: s.timer_level,
         text: step.message,
-        items: [{ task_id: task.id, title: chore.name, minutes: chore.est_minutes }],
+        items: [{ item_id: String(task.id), title: chore.name, minutes: chore.est_minutes }],
       });
       out.push({ at: iso, message: step.message, scheduled });
     }

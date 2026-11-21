@@ -60,7 +60,7 @@ describe("/jeeves manifest and auth", () => {
       ui: { path: "/jeeves/ui", title: "Chores" },
       events: [expect.objectContaining({ type: "task_started" }), expect.objectContaining({ type: "task_completed" })],
       steps: expect.objectContaining({ list_due_tasks: expect.objectContaining({ title: "List due chores" }) }),
-      today: true,
+      views: [expect.objectContaining({ id: "today" })],
       settings_schema: { type: "object" },
     });
     expect(Object.keys(m.settings_schema.properties).sort()).toEqual(
@@ -432,5 +432,39 @@ describe("task events", () => {
     const [task] = store.listDue("2026-11-14");
     await client.callTool({ name: "complete_task", arguments: { task_id: task.id } });
     expect(seen).toEqual([["task_completed", { task_id: task.id, chore_id: task.chore_id, name: task.name }]]);
+  });
+});
+
+describe("/jeeves views and actions", () => {
+  it("serves today's tasks as generic items with their buttons", async () => {
+    const { app } = setup();
+    const res = await app.inject({ method: "GET", url: "/jeeves/views/today", headers: auth });
+    expect(res.statusCode).toBe(200);
+    const { items } = res.json();
+    expect(items.length).toBeGreaterThan(0);
+    expect(items[0]).toMatchObject({ id: expect.stringMatching(/^\d+$/), title: expect.any(String), finished: false });
+    expect(items[0].actions.map((a: { id: string }) => a.id)).toEqual(["start", "done", "skip"]);
+    expect((await app.inject({ method: "GET", url: "/jeeves/views/nope", headers: auth })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: "/jeeves/views/today" })).statusCode).toBe(401);
+  });
+
+  it("runs actions with the same side effects as the tools, and says when an item is resolved", async () => {
+    const seen: [TaskEventType, TaskEventPayload][] = [];
+    const { app } = setup({ events: (t, p) => seen.push([t, p]) });
+    const [first] = (await app.inject({ method: "GET", url: "/jeeves/views/today", headers: auth })).json().items;
+    const act = (action: string, item = first.id, args?: object) =>
+      app.inject({ method: "POST", url: "/jeeves/actions", headers: auth, payload: { item, action, ...(args ? { args } : {}) } });
+
+    expect((await act("start")).json()).toMatchObject({ ok: true, resolved: false });
+    expect(seen.map(([t]) => t)).toEqual(["task_started"]);
+    const view = (await app.inject({ method: "GET", url: "/jeeves/views/today", headers: auth })).json().items;
+    expect(view.find((i: { id: string }) => i.id === first.id).actions.map((a: { id: string }) => a.id)).toEqual(["done", "skip"]);
+
+    expect((await act("done")).json()).toMatchObject({ ok: true, resolved: true });
+    expect(seen.map(([t]) => t)).toEqual(["task_started", "task_completed"]);
+    expect((await act("snooze", first.id, { minutes: 30 })).statusCode).toBe(200);
+
+    expect((await act("done", "999999")).statusCode).toBe(404);
+    expect((await act("explode")).statusCode).toBe(400);
   });
 });

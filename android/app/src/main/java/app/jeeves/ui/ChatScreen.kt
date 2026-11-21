@@ -34,6 +34,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import app.jeeves.Api
 import app.jeeves.ChatMessage
+import app.jeeves.ItemAction
 import app.jeeves.PlanItem
 import app.jeeves.Prefs
 import app.jeeves.Work
@@ -82,10 +83,10 @@ fun ChatScreen(prefs: Prefs, modifier: Modifier = Modifier) {
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             items(messages, key = { it.id }) { m ->
-                MessageBubble(m, onDone = { item ->
+                MessageBubble(m, onAction = { item, action ->
                     scope.launch {
                         try {
-                            api.taskAction(item.task_id!!, "done")
+                            api.itemAction(item.plugin!!, item.item_id!!, action)
                         } catch (e: Exception) {
                             error = e.message
                         }
@@ -125,7 +126,7 @@ fun ChatScreen(prefs: Prefs, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun MessageBubble(m: ChatMessage, onDone: (PlanItem) -> Unit) {
+private fun MessageBubble(m: ChatMessage, onAction: (PlanItem, ItemAction) -> Unit) {
     val mine = m.direction == "in"
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start) {
         Card(
@@ -148,12 +149,17 @@ private fun MessageBubble(m: ChatMessage, onDone: (PlanItem) -> Unit) {
                         modifier = Modifier.padding(top = 8.dp),
                     )
                     item.steps.forEach { step -> Text("• $step", style = MaterialTheme.typography.bodyMedium) }
-                    if (item.task_id != null) {
-                        var done by remember(m.id, i) { mutableStateOf(false) }
-                        TextButton(enabled = !done, onClick = {
-                            done = true
-                            onDone(item)
-                        }) { Text(if (done) "Ticked off" else "Done") }
+                    // The plugin's buttons for this item; once one is used, the others are greyed out.
+                    if (item.plugin != null && item.item_id != null && item.actions.isNotEmpty()) {
+                        var used by remember(m.id, i) { mutableStateOf<String?>(null) }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            item.actions.forEach { a ->
+                                TextButton(enabled = used == null, onClick = {
+                                    used = a.id
+                                    onAction(item, a)
+                                }) { Text(if (used == a.id) "${a.label} ✓" else a.label) }
+                            }
+                        }
                     }
                 }
             }

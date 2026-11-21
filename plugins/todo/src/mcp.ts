@@ -1,19 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { emitTaskEvent, type EventPoster } from "./events.js";
-import type { ReminderScheduler } from "./reminders.js";
-import { localDate, type TaskInstance, type TodoStore } from "./store.js";
+import { taskActions, type ActionDeps } from "./actions.js";
 import { VERSION } from "./version.js";
 
-export interface McpDeps {
-  store: TodoStore;
-  timeZone: string;
-  now?: () => Date;
-  /** Where task_started / task_completed events go (fire and forget). */
-  events?: EventPoster;
-  /** Schedules timer steps and daily reminders on Jeeves. Without it, start_task returns plain followups. */
-  reminders?: ReminderScheduler;
-}
+export type McpDeps = ActionDeps;
 
 const json = (value: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
@@ -24,20 +14,23 @@ const fail = (message: string) => ({
   isError: true,
 });
 
+/** Runs a task action, turning a thrown error (unknown task, bad transition) into a tool error. */
+const attempt = async (fn: () => Promise<unknown>) => {
+  try {
+    return json(await fn());
+  } catch (e) {
+    return fail((e as Error).message);
+  }
+};
+
 /**
  * Builds the MCP server the Jeeves control plane talks to. A fresh server is built per request
  * (stateless HTTP), so this must stay cheap.
  */
-export function buildMcpServer({ store, timeZone, now = () => new Date(), events, reminders }: McpDeps): McpServer {
+export function buildMcpServer(deps: McpDeps): McpServer {
+  const { store } = deps;
+  const actions = taskActions(deps);
   const server = new McpServer({ name: "jeeves-todo", version: VERSION });
-
-  /** After a task is done or skipped: drop its timer reminders and refresh the daily set. */
-  const finishTimers = async (task: TaskInstance) => {
-    if (!reminders) return;
-    const chore = store.getChore(task.chore_id);
-    if (chore) await reminders.cancelTimers(task, chore);
-    await reminders.sync();
-  };
 
   server.registerTool(
     "list_due_tasks",
@@ -48,7 +41,7 @@ export function buildMcpServer({ store, timeZone, now = () => new Date(), events
       inputSchema: { date: z.string().optional().describe("YYYY-MM-DD; defaults to today") },
       annotations: { readOnlyHint: true },
     },
-    async ({ date }) => json(store.listDue(date ?? localDate(now(), timeZone), now())),
+    async ({ date }) => json(actions.listDue(date)),
   );
 
   server.registerTool(
@@ -74,57 +67,19 @@ export function buildMcpServer({ store, timeZone, now = () => new Date(), events
         "schedule_followup for them; only schedule the ones with scheduled: false.",
       inputSchema: { task_id: z.number().int() },
     },
-    async ({ task_id }) => {
-      try {
-        const task = store.setState(task_id, "started", now());
-        const chore = store.getChore(task.chore_id)!;
-        let at = new Date(task.started_at!).getTime();
-        let followups: { at: string; message: string; scheduled?: boolean }[];
-        if (reminders) {
-          followups = await reminders.scheduleTimer(task, chore);
-        } else {
-          const steps = store.settings().followup_nudges ? chore.timer_steps : [];
-          followups = steps.map((s) => {
-            at += s.after_minutes * 60_000;
-            return { at: new Date(at).toISOString(), message: s.message };
-          });
-        }
-        emitTaskEvent(store, events, "task_started", task);
-        await reminders?.sync();
-        return json({ task, followups });
-      } catch (e) {
-        return fail((e as Error).message);
-      }
-    },
+    async ({ task_id }) => attempt(() => actions.start(task_id)),
   );
 
   server.registerTool(
     "complete_task",
     { description: "Mark a task as done.", inputSchema: { task_id: z.number().int() } },
-    async ({ task_id }) => {
-      try {
-        const task = store.setState(task_id, "done", now());
-        emitTaskEvent(store, events, "task_completed", task);
-        await finishTimers(task);
-        return json(task);
-      } catch (e) {
-        return fail((e as Error).message);
-      }
-    },
+    async ({ task_id }) => attempt(() => actions.complete(task_id)),
   );
 
   server.registerTool(
     "skip_task",
     { description: "Skip a task for today.", inputSchema: { task_id: z.number().int() } },
-    async ({ task_id }) => {
-      try {
-        const task = store.setState(task_id, "skipped", now());
-        await finishTimers(task);
-        return json(task);
-      } catch (e) {
-        return fail((e as Error).message);
-      }
-    },
+    async ({ task_id }) => attempt(() => actions.skip(task_id)),
   );
 
   server.registerTool(
@@ -137,15 +92,7 @@ export function buildMcpServer({ store, timeZone, now = () => new Date(), events
         minutes: z.number().int().min(1).max(24 * 60).optional(),
       },
     },
-    async ({ task_id, minutes }) => {
-      try {
-        const task = store.snooze(task_id, minutes ?? store.settings().default_snooze_minutes, now());
-        await reminders?.sync();
-        return json(task);
-      } catch (e) {
-        return fail((e as Error).message);
-      }
-    },
+    async ({ task_id, minutes }) => attempt(() => actions.snooze(task_id, minutes)),
   );
 
   return server;

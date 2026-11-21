@@ -1,18 +1,16 @@
 /**
  * End to end across both services: the real to-do plugin and the real Jeeves server, talking over
- * HTTP (MCP, the manifest, settings push and plugin events). Only Claude and the clock are fake.
+ * HTTP (MCP, the manifest, settings push, views, actions and plugin events). Only Claude and the clock are fake.
  */
 import { afterAll, describe, expect, it } from "vitest";
 import { join } from "node:path";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { Agent } from "./agent.js";
 import { buildApp } from "./app.js";
 import { ConfigStore } from "./configstore.js";
 import { Db } from "./db.js";
 import { Engine } from "./engine.js";
 import { McpPluginHost } from "./plugins.js";
-import { RecordingNotifier, scriptedClaude, tmpConfigDir } from "./testkit.js";
+import { pair, RecordingNotifier, scriptedClaude, tmpConfigDir } from "./testkit.js";
 import { buildApp as buildTodoApp } from "../../plugins/todo/src/index.js";
 import { seedFromFile } from "../../plugins/todo/src/seed.js";
 import { TodoStore } from "../../plugins/todo/src/store.js";
@@ -76,20 +74,25 @@ describe("e2e: todo.task_started -> wait -> message", () => {
     const tools = await host.listTools();
     expect(tools.find((t) => t.name === "todo__list_due_tasks")?.read_only).toBe(true);
     await host.idle();
-    expect(host.manifest("todo")).toMatchObject({ today: true, events: ["task_started", "task_completed"] });
-    expect(engine.todayPlugin()).toBe("todo");
+    expect(host.manifest("todo")).toMatchObject({ events: ["task_started", "task_completed"], views: [{ id: "today", title: "Today" }] });
 
-    // Something (Claude, the app) starts laundry over MCP.
-    const client = new Client({ name: "e2e", version: "0" });
-    await client.connect(new StreamableHTTPClientTransport(new URL(`${todoUrl}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${TOKEN}` } } }));
-    closers.push(() => client.close());
-    const due = JSON.parse(((await client.callTool({ name: "list_due_tasks", arguments: {} })).content as { text: string }[])[0].text);
-    const laundry = due.find((t: { chore_id: string }) => t.chore_id === "laundry");
-    await client.callTool({ name: "start_task", arguments: { task_id: laundry.id } });
+    // The app's Today tab: the plugin's view, relayed by Jeeves as generic items.
+    const headers = await pair(jeeves);
+    expect((await jeeves.inject({ method: "GET", url: "/views", headers })).json()).toEqual({
+      views: [{ plugin: "todo", id: "today", title: "Today", empty_text: "Nothing due. Enjoy your evening." }],
+    });
+    const view = (await jeeves.inject({ method: "GET", url: "/views/todo/today", headers })).json();
+    const laundry = view.items.find((i: { title: string }) => i.title === "Do a load of laundry");
+    expect(laundry.actions.map((a: { id: string }) => a.id)).toEqual(["start", "done", "skip"]);
+
+    // Tapping Start in the app goes to the plugin's /jeeves/actions.
+    const start = await jeeves.inject({ method: "POST", url: "/plugins/todo/actions", headers, payload: { item: laundry.id, action: "start" } });
+    expect(start.json()).toMatchObject({ ok: true, resolved: false });
+    expect((await jeeves.inject({ method: "POST", url: "/plugins/todo/actions", headers, payload: { item: "999999", action: "done" } })).statusCode).toBe(404);
 
     // The plugin event arrives and the workflow starts waiting.
     const event = await until(() => db.lastEvent("todo.task_started", "9999"));
-    expect(event.payload).toMatchObject({ task_id: laundry.id, chore_id: "laundry", name: "Do a load of laundry" });
+    expect(event.payload).toMatchObject({ task_id: Number(laundry.id), chore_id: "laundry", name: "Do a load of laundry" });
     await engine.idle();
     const [run] = db.workflowRuns();
     expect(run).toMatchObject({ workflow_id: "laundry-check", status: "waiting", event_id: event.id });

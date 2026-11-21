@@ -34,12 +34,14 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import app.jeeves.ui.localTime
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
 
 /** Full-screen alarm shown over the lock screen for `alarm` level reminders. Rings until a button is pressed. */
 class AlarmActivity : ComponentActivity() {
     private var player: MediaPlayer? = null
     private var messageId = 0L
-    private var taskId: Long? = null
+    /** The item's main plugin action (e.g. the to-do plugin's Done), when the alarm is about one item. */
+    private var itemAction: Triple<String, String, ItemAction>? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -51,7 +53,7 @@ class AlarmActivity : ComponentActivity() {
         messageId = intent.getLongExtra(EXTRA_ID, 0L)
         val text = intent.getStringExtra(EXTRA_TEXT).orEmpty()
         val dueAt = intent.getStringExtra(EXTRA_DUE)
-        taskId = intent.getLongExtra(EXTRA_TASK, -1L).takeIf { it >= 0 }
+        itemAction = readItemAction(intent)
 
         startRinging()
 
@@ -61,10 +63,13 @@ class AlarmActivity : ComponentActivity() {
                     AlarmContent(
                         text = text,
                         time = localTime(dueAt),
-                        canComplete = taskId != null,
+                        primaryLabel = itemAction?.third?.label,
                         onDismiss = { stopAndFinish() },
                         onSnooze = { act { Api(Prefs(applicationContext)).snoozeMessage(messageId, 10) } },
-                        onDone = { act { Api(Prefs(applicationContext)).taskAction(taskId!!, "done") } },
+                        onDone = {
+                            val (plugin, item, action) = itemAction!!
+                            act { Api(Prefs(applicationContext)).itemAction(plugin, item, action) }
+                        },
                     )
                 }
             }
@@ -142,15 +147,44 @@ class AlarmActivity : ComponentActivity() {
         private const val EXTRA_ID = "message_id"
         private const val EXTRA_TEXT = "text"
         private const val EXTRA_DUE = "due_at"
-        private const val EXTRA_TASK = "task_id"
+        private const val EXTRA_PLUGIN = "plugin"
+        private const val EXTRA_ITEM = "item_id"
+        private const val EXTRA_ACTION = "action"
+        private val actionJson = Json { ignoreUnknownKeys = true }
 
-        fun intent(context: Context, message: ChatMessage): Intent =
-            Intent(context, AlarmActivity::class.java)
+        /** The single item's primary action (or its first), so the alarm can offer it as the main button. */
+        private fun primaryAction(message: ChatMessage): Triple<String, String, ItemAction>? {
+            val item = message.items.orEmpty().singleOrNull() ?: return null
+            val plugin = item.plugin ?: return null
+            val id = item.item_id ?: return null
+            val action = item.actions.firstOrNull { it.style == "primary" } ?: item.actions.firstOrNull() ?: return null
+            return Triple(plugin, id, action)
+        }
+
+        private fun readItemAction(intent: Intent): Triple<String, String, ItemAction>? {
+            val plugin = intent.getStringExtra(EXTRA_PLUGIN) ?: return null
+            val item = intent.getStringExtra(EXTRA_ITEM) ?: return null
+            val action = intent.getStringExtra(EXTRA_ACTION) ?: return null
+            return try {
+                Triple(plugin, item, actionJson.decodeFromString<ItemAction>(action))
+            } catch (e: Exception) {
+                null
+            }
+        }
+
+        fun intent(context: Context, message: ChatMessage): Intent {
+            val intent = Intent(context, AlarmActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 .putExtra(EXTRA_ID, message.id)
                 .putExtra(EXTRA_TEXT, message.text)
                 .putExtra(EXTRA_DUE, message.due_at)
-                .putExtra(EXTRA_TASK, message.items.orEmpty().singleOrNull()?.task_id ?: -1L)
+            primaryAction(message)?.let { (plugin, item, action) ->
+                intent.putExtra(EXTRA_PLUGIN, plugin)
+                    .putExtra(EXTRA_ITEM, item)
+                    .putExtra(EXTRA_ACTION, actionJson.encodeToString(ItemAction.serializer(), action))
+            }
+            return intent
+        }
     }
 }
 
@@ -158,7 +192,8 @@ class AlarmActivity : ComponentActivity() {
 private fun AlarmContent(
     text: String,
     time: String,
-    canComplete: Boolean,
+    /** The item's main button (e.g. "Done"), or null when the alarm isn't about a plugin item. */
+    primaryLabel: String?,
     onDismiss: () -> Unit,
     onSnooze: () -> Unit,
     onDone: () -> Unit,
@@ -170,8 +205,8 @@ private fun AlarmContent(
     ) {
         if (time.isNotBlank()) Text(time, style = MaterialTheme.typography.titleLarge)
         Text(text, style = MaterialTheme.typography.headlineLarge, textAlign = TextAlign.Center)
-        if (canComplete) {
-            Button(onClick = onDone, modifier = Modifier.fillMaxWidth()) { Text("Done") }
+        if (primaryLabel != null) {
+            Button(onClick = onDone, modifier = Modifier.fillMaxWidth()) { Text(primaryLabel) }
         }
         OutlinedButton(onClick = onSnooze, modifier = Modifier.fillMaxWidth()) { Text("Snooze 10 min") }
         OutlinedButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("Dismiss") }

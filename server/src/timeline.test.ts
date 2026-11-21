@@ -65,10 +65,10 @@ describe("timeline: upcoming", () => {
     });
     s.engine.handleEvent("todo.task_started", { chore_id: "laundry" }, null);
     await s.engine.idle();
-    s.db.addJob(new Date("2026-11-13T20:00:00Z"), "followup", { message: "Check the oven", task_id: 3 });
+    s.db.addJob(new Date("2026-11-13T20:00:00Z"), "followup", { message: "Check the oven", plugin: "todo", item_id: "3" });
     const t = upcoming(deps(s), 48, FRIDAY_EVENING);
     expect(t.items).toMatchObject([
-      { kind: "followup", at: "2026-11-13T20:00:00.000Z", message: "Check the oven", task_id: 3 },
+      { kind: "followup", at: "2026-11-13T20:00:00.000Z", message: "Check the oven", plugin: "todo", item_id: "3" },
       { kind: "wait", at: "2026-11-13T20:15:00.000Z", workflow_id: "laundry", next_step: "nudge" },
     ]);
     expect(t.waiting_for).toEqual([
@@ -218,7 +218,7 @@ describe("observability API", () => {
   it("serves upcoming, health, activity and job cancellation", async () => {
     const s = setup({ workflows: [WEEKEND] });
     const headers = await pair(s.app);
-    const job = s.db.addJob(new Date("2026-11-14T13:00:00Z"), "followup", { message: "Dryer", task_id: 2 });
+    const job = s.db.addJob(new Date("2026-11-14T13:00:00Z"), "followup", { message: "Dryer", plugin: "todo", item_id: "2" });
     const up = (await s.app.inject({ method: "GET", url: "/timeline/upcoming?hours=24", headers })).json();
     expect(up.items.map((i: { kind: string }) => i.kind)).toEqual(["followup", "schedule"]);
 

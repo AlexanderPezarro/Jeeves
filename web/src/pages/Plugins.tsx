@@ -170,7 +170,8 @@ function PluginDetail({ plugin }: { plugin: PluginEntry }) {
                 ))}
               </div>
             )}
-            {m.today && <div>Provides the app's Today list.</div>}
+            {(m.views ?? []).length > 0 && <div>Lists in the app: {m.views!.map((v) => v.title).join(", ")}.</div>}
+            {(m.item_actions ?? []).length > 0 && <div>Notification buttons: {m.item_actions!.map((a) => a.label).join(", ")}.</div>}
           </div>
         )}
       </section>

@@ -1,20 +1,11 @@
 import { Cron } from "croner";
-import { Agent, scheduleFollowups } from "./agent.js";
+import { Agent } from "./agent.js";
 import { isSchedule, type ConfigSource, type Workflow } from "./config.js";
 import type { Db, EventRow, ReminderPayload } from "./db.js";
 import type { PluginHost } from "./plugins.js";
 import { RESUME_JOB, WorkflowRunner, type RunOutcome } from "./runner.js";
 import { evaluateWorkflows, scheduleEventType, type Decision } from "./triggers.js";
 import { localTime } from "./time.js";
-
-export type TaskAction = "start" | "done" | "skip" | "snooze";
-
-const ACTION_TOOL: Record<TaskAction, string> = {
-  start: "start_task",
-  done: "complete_task",
-  skip: "skip_task",
-  snooze: "snooze_task",
-};
 
 export interface DecisionView {
   workflow_id: string;
@@ -129,37 +120,6 @@ export class Engine {
     return msg;
   }
 
-  /**
-   * Which plugin serves the Today list and task buttons: the first whose manifest says
-   * `today: true`, else the deprecated `todo_plugin` setting. None means 404 "no Today plugin".
-   */
-  todayPlugin(): string | null {
-    const fromManifest = (this.plugins as { todayPlugin?: () => string | null }).todayPlugin?.() ?? null;
-    return fromManifest ?? this.config.current.todo_plugin ?? null;
-  }
-
-  /** A notification button or a tap in the Today list. */
-  async taskAction(taskId: number, action: TaskAction, minutes = 15) {
-    const plugin = this.todayPlugin();
-    if (!plugin) return { text: "no Today plugin", isError: true, notFound: true };
-    const args: Record<string, unknown> = { task_id: taskId };
-    if (action === "snooze") args.minutes = minutes;
-    const res = await this.plugins.call(plugin, ACTION_TOOL[action], args);
-    if (!res.isError) {
-      if (action === "start") scheduleFollowups(this.db, res.text);
-      if (action === "done" || action === "skip") this.db.cancelJobsForTask(taskId, this.now());
-    }
-    return res;
-  }
-
-  async today() {
-    const plugin = this.todayPlugin();
-    if (!plugin) throw Object.assign(new Error("no Today plugin"), { notFound: true });
-    const res = await this.plugins.call(plugin, "list_due_tasks", {});
-    if (res.isError) throw new Error(res.text);
-    return JSON.parse(res.text) as unknown[];
-  }
-
   /** Cancels a pending follow-up or wait. A cancelled wait cancels its workflow run. */
   cancelJob(id: number): boolean {
     const job = this.db.getJob(id);
@@ -174,8 +134,9 @@ export class Engine {
       try {
         if (job.kind === "followup") {
           const message = String(job.payload.message);
-          const taskId = typeof job.payload.task_id === "number" ? job.payload.task_id : undefined;
-          await this.agent.sendMessage(message, taskId ? [{ task_id: taskId, title: message, steps: [] }] : []);
+          const { plugin, item_id } = job.payload as { plugin?: unknown; item_id?: unknown };
+          const about = typeof plugin === "string" && typeof item_id === "string" ? [{ plugin, item_id, title: message, steps: [] }] : [];
+          await this.agent.sendMessage(message, about);
         } else if (job.kind === "reminder") {
           const p = job.payload as unknown as ReminderPayload;
           const msg = await this.agent.sendMessage(p.text, p.items ?? [], null, { level: p.level, due_at: job.run_at, job_id: job.id });

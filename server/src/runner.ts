@@ -247,7 +247,11 @@ export class WorkflowRunner {
 
     if ("message" in step) {
       const text = render(step.message.text, s.tctx, s.warnings);
-      const items: PlanItem[] = (renderDeep(step.message.items ?? [], s.tctx, s.warnings) as PlanItem[]).map((i) => ({ ...i, steps: i.steps ?? [] }));
+      const items: PlanItem[] = (renderDeep(step.message.items ?? [], s.tctx, s.warnings) as (Omit<PlanItem, "item_id"> & { item_id?: unknown })[]).map((i) => ({
+        ...i,
+        ...(i.item_id === undefined || i.item_id === null ? { item_id: undefined } : { item_id: String(i.item_id) }),
+        steps: i.steps ?? [],
+      }));
       const input = { text, ...(items.length ? { items } : {}) };
       if (s.dryRun) {
         done({ dry_run: true, text, items }, { input });

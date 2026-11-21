@@ -129,7 +129,7 @@ private fun PluginCard(plugin: PluginInfo, onSettings: () -> Unit, onOpenUi: (St
                     plugin.name.takeIf { manifest?.display_name != null },
                     manifest?.version?.let { "v$it" },
                     "${st?.tool_count ?: 0} tool${if (st?.tool_count == 1) "" else "s"}",
-                    if (manifest?.today == true) "provides Today" else null,
+                    manifest?.views?.takeIf { it.isNotEmpty() }?.let { v -> "lists: " + v.joinToString { it.title } },
                 ).joinToString(" · "),
                 style = MaterialTheme.typography.labelMedium,
             )

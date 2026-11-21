@@ -163,7 +163,10 @@ export type ScheduleTrigger = z.infer<typeof scheduleTrigger>;
 export const isSchedule = (t: Trigger): t is ScheduleTrigger => "schedule" in t;
 
 const planItemSchema = z.object({
-  task_id: z.number().int().optional(),
+  /** With item_id: which plugin item this is about, so the notification gets that plugin's buttons. */
+  plugin: z.string().optional(),
+  /** A string, or a template such as "{{event.task_id}}" (rendered values are turned into strings). */
+  item_id: z.union([z.string(), z.number()]).optional(),
   title: z.string(),
   steps: z.array(z.string()).default([]),
   minutes: z.number().int().optional(),
@@ -172,7 +175,7 @@ const planItemSchema = z.object({
 export type Step =
   | { id: string; call: { plugin: string; tool: string; args?: Record<string, unknown> } }
   | { id: string; claude: { prompt: string; tools?: string[] } }
-  | { id: string; message: { text: string; items?: { task_id?: number; title: string; steps?: string[]; minutes?: number }[] } }
+  | { id: string; message: { text: string; items?: { plugin?: string; item_id?: string | number; title: string; steps?: string[]; minutes?: number }[] } }
   | { id: string; wait: { minutes: number } | { until: string } }
   | { id: string; if: CondExpr; then: Step[]; else?: Step[] }
   | { id: string; stop: { reason?: string } | null };

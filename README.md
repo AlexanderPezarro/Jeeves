@@ -33,7 +33,7 @@ Android app ──events──▶ server (workflows, scheduler, Claude) ──MC
    send a message, wait (minutes, or until a time of day), branch with `if`, or `stop`. A Claude
    step can call the plugins' tools (`todo__list_due_tasks`, `todo__complete_task`, …) plus two
    built-ins: `send_message` and `schedule_followup`. Only messages reach your phone.
-4. **Completion.** Tap Done/Snooze/Skip on a notification or in the Today list, or reply in the chat
+4. **Completion.** Tap the plugin's buttons (the to-do plugin's Start/Done/Skip) on a notification or in the Today list, or reply in the chat
    ("dishes done, laundry is in"). Starting a timed chore schedules a reminder for each of its timer steps
    (at the todo plugin's `timer_level`), and completing or skipping it cancels them. So a workflow
    shouldn't also wait and nudge for the same timer.
@@ -121,11 +121,26 @@ Settings are stored in `config/plugins/<name>.yaml` (fields marked `format: secr
 whenever the plugin (re)connects. The plugin's page is proxied at `/admin/api/plugins/<name>/ui/`
 (web) and `/plugins/<name>/ui/` (app, with a short-lived token). Events posted to
 `POST /plugin-events` with the plugin's token arrive as `<plugin>.<event>` and can trigger
-workflows. The Today list comes from the plugin whose manifest says `today: true`.
+workflows.
+
+**Lists and buttons in the app.** The server doesn't know what a plugin's items are; the plugin
+describes them:
+
+- `views: [{id, title, empty_text?}]` in the manifest: lists the app's Today tab shows. The plugin
+  serves `GET /jeeves/views/<id>` as `{items: [{id, title, meta?, note?, detail[], finished, actions[]}]}`,
+  where each item's `actions` (`{id, label, style?: primary|secondary|text, args?}`) are its buttons
+  right now. The app reads them through `GET /views` and `GET /views/<plugin>/<id>`.
+- `item_actions: [...]` in the manifest (up to three): the buttons on a notification about one of
+  the plugin's items. A message item is about a plugin item when it carries `plugin` and `item_id`
+  (Claude's `send_message`, `schedule_followup`, a workflow `message` step, or a plugin reminder).
+- A tap goes to `POST /plugins/<plugin>/actions {item, action, args}` on Jeeves, which forwards it
+  to the plugin's `POST /jeeves/actions`. If the plugin answers `resolved: true`, pending follow-ups
+  about that item are cancelled.
 
 The to-do plugin uses this for its settings (carry-over days, default snooze, timer follow-ups,
-events on or off), a **Chores** page for adding, editing and deleting chores, and the
-`todo.task_started` / `todo.task_completed` events it posts back to Jeeves (`JEEVES_URL`).
+events on or off), a **Chores** page for adding, editing and deleting chores, the
+`todo.task_started` / `todo.task_completed` events it posts back to Jeeves (`JEEVES_URL`), a
+**Today** view with Start/Done/Skip on each task, and Done / Snooze 15 min / Skip on notifications.
 
 ## Running it on the homeserver
 

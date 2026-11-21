@@ -1,6 +1,7 @@
 package app.jeeves.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -11,11 +12,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -35,45 +38,47 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import app.jeeves.Api
-import app.jeeves.ApiException
+import app.jeeves.ItemAction
+import app.jeeves.PluginView
 import app.jeeves.Prefs
-import app.jeeves.Task
+import app.jeeves.ViewContent
+import app.jeeves.ViewItem
 import app.jeeves.Work
 import kotlinx.coroutines.launch
 
+/**
+ * The Today tab: the lists plugins serve (the to-do plugin's "Today", and any others), with the
+ * buttons each plugin puts on its items. The app knows nothing about what the items are.
+ */
 @Composable
 fun TodayScreen(prefs: Prefs, modifier: Modifier = Modifier) {
     val api = remember { Api(prefs) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var tasks by remember { mutableStateOf<List<Task>>(emptyList()) }
+    var views by remember { mutableStateOf<List<PluginView>>(emptyList()) }
+    var selected by remember { mutableStateOf<PluginView?>(null) }
+    var content by remember { mutableStateOf<ViewContent?>(null) }
     var loading by remember { mutableStateOf(true) }
     var status by remember { mutableStateOf<String?>(null) }
-    var noTodayPlugin by remember { mutableStateOf(false) }
 
     fun refresh() = scope.launch {
         loading = true
         status = try {
-            tasks = api.today()
-            noTodayPlugin = false
+            views = api.views()
+            val current = views.firstOrNull { it.plugin == selected?.plugin && it.id == selected?.id } ?: views.firstOrNull()
+            selected = current
+            content = current?.let { api.view(it.plugin, it.id) }
             null
-        } catch (e: ApiException) {
-            // The server answers 404 when no plugin provides the Today list.
-            if (e.code == 404) {
-                tasks = emptyList()
-                noTodayPlugin = true
-                null
-            } else e.message
         } catch (e: Exception) {
             e.message
         }
         loading = false
     }
 
-    fun act(task: Task, action: String) = scope.launch {
+    fun act(item: ViewItem, action: ItemAction) = scope.launch {
+        val view = selected ?: return@launch
         status = try {
-            api.taskAction(task.id, action, if (action == "snooze") 15 else null)
-            null
+            api.itemAction(view.plugin, item.id, action).message
         } catch (e: Exception) {
             e.message
         }
@@ -84,7 +89,7 @@ fun TodayScreen(prefs: Prefs, modifier: Modifier = Modifier) {
 
     Column(modifier.fillMaxSize().padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Today", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.weight(1f))
+            Text(selected?.title ?: "Today", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.weight(1f))
             IconButton(onClick = { refresh() }) { Icon(Icons.Filled.Refresh, contentDescription = "Refresh") }
         }
         Button(
@@ -102,61 +107,77 @@ fun TodayScreen(prefs: Prefs, modifier: Modifier = Modifier) {
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Plan my evening") }
 
+        if (views.size > 1) {
+            Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                views.forEach { v ->
+                    FilterChip(
+                        selected = v.plugin == selected?.plugin && v.id == selected?.id,
+                        onClick = {
+                            selected = v
+                            refresh()
+                        },
+                        label = { Text(v.title) },
+                    )
+                }
+            }
+        }
+
         status?.let { Text(it, modifier = Modifier.padding(vertical = 8.dp), style = MaterialTheme.typography.bodyMedium) }
 
+        val items = content?.items.orEmpty()
         when {
-            loading && tasks.isEmpty() -> Row(Modifier.fillMaxWidth().padding(32.dp), horizontalArrangement = Arrangement.Center) {
+            loading && content == null -> Row(Modifier.fillMaxWidth().padding(32.dp), horizontalArrangement = Arrangement.Center) {
                 CircularProgressIndicator()
             }
-            noTodayPlugin -> Text(
-                "No plugin provides a Today list yet. Add one (such as the todo plugin) on the server to see tasks here.",
+            views.isEmpty() && !loading -> Text(
+                "No plugin provides a list yet. Add one (such as the to-do plugin) on the server to see it here.",
                 modifier = Modifier.padding(top = 24.dp),
             )
-            tasks.isEmpty() -> Text("Nothing due. Enjoy your evening.", modifier = Modifier.padding(top = 24.dp))
+            items.isEmpty() && !loading -> Text(content?.empty_text ?: "Nothing here.", modifier = Modifier.padding(top = 24.dp))
             else -> LazyColumn(
                 contentPadding = PaddingValues(vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                items(tasks, key = { it.id }) { task -> TaskCard(task, onAction = { act(task, it) }) }
+                items(items, key = { it.id }) { item -> ItemCard(item, onAction = { act(item, it) }) }
             }
         }
     }
 }
 
 @Composable
-private fun TaskCard(task: Task, onAction: (String) -> Unit) {
+private fun ItemCard(item: ViewItem, onAction: (ItemAction) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
-    val finished = task.state == "done" || task.state == "skipped"
     Card(Modifier.fillMaxWidth().clickable { expanded = !expanded }) {
         Column(Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    task.name,
+                    item.title,
                     style = MaterialTheme.typography.titleMedium,
-                    color = if (finished) Color.Gray else Color.Unspecified,
+                    color = if (item.finished) Color.Gray else Color.Unspecified,
                     modifier = Modifier.weight(1f),
                 )
-                Text("${task.est_minutes} min · " + "●".repeat(task.effort), style = MaterialTheme.typography.labelMedium)
+                item.meta?.let { Text(it, style = MaterialTheme.typography.labelMedium) }
             }
-            val note = when {
-                task.state == "done" -> "Done"
-                task.state == "skipped" -> "Skipped"
-                task.state == "started" -> "In progress"
-                task.overdue_days > 0 -> "Overdue by ${task.overdue_days} day${if (task.overdue_days > 1) "s" else ""}"
-                else -> null
-            }
-            note?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary) }
+            item.note?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary) }
             if (expanded) {
-                task.how_to.forEachIndexed { i, step -> Text("${i + 1}. $step", style = MaterialTheme.typography.bodyMedium) }
+                item.detail.forEachIndexed { i, line -> Text("${i + 1}. $line", style = MaterialTheme.typography.bodyMedium) }
             }
-            if (!finished) {
+            if (item.actions.isNotEmpty()) {
                 Spacer(Modifier.padding(top = 4.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (task.state != "started") OutlinedButton(onClick = { onAction("start") }) { Text("Start") }
-                    Button(onClick = { onAction("done") }) { Text("Done") }
-                    TextButton(onClick = { onAction("skip") }) { Text("Skip") }
+                    item.actions.forEach { a -> ActionButton(a) { onAction(a) } }
                 }
             }
         }
+    }
+}
+
+/** A plugin-declared button, drawn in the style it asks for. */
+@Composable
+fun ActionButton(action: ItemAction, enabled: Boolean = true, onClick: () -> Unit) {
+    when (action.style) {
+        "primary" -> Button(onClick = onClick, enabled = enabled) { Text(action.label) }
+        "text" -> TextButton(onClick = onClick, enabled = enabled) { Text(action.label) }
+        else -> OutlinedButton(onClick = onClick, enabled = enabled) { Text(action.label) }
     }
 }

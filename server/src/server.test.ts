@@ -16,8 +16,8 @@ describe("arrive home, end to end", () => {
           toolUse("t2", "send_message", {
             text: "Welcome home! Two quick ones tonight.",
             items: [
-              { task_id: 1, title: "Wash the dishes", steps: ["Hot water", "Glasses first"], minutes: 10 },
-              { task_id: 2, title: "Start the laundry", steps: ["Sort", "40 degrees"], minutes: 15 },
+              { plugin: "todo", item_id: "1", title: "Wash the dishes", steps: ["Hot water", "Glasses first"], minutes: 10 },
+              { plugin: "todo", item_id: "2", title: "Start the laundry", steps: ["Sort", "40 degrees"], minutes: 15 },
             ],
           }),
         ]),
@@ -40,7 +40,9 @@ describe("arrive home, end to end", () => {
     expect(JSON.stringify(first.messages[0].content)).toContain("sat 2026-11-14, 18:20");
 
     expect(s.notifier.sent).toHaveLength(1);
-    expect(s.notifier.sent[0].items?.map((i) => i.task_id)).toEqual([1, 2]);
+    expect(s.notifier.sent[0].items?.map((i) => i.item_id)).toEqual(["1", "2"]);
+    // Items about a plugin's item get that plugin's buttons (its manifest item_actions).
+    expect(s.notifier.sent[0].items?.[0].actions?.map((a) => a.id)).toEqual(["done", "skip"]);
 
     const msgs = await s.app.inject({ method: "GET", url: "/messages?after=0", headers });
     expect(msgs.json().messages[0].text).toBe("Welcome home! Two quick ones tonight.");
@@ -67,23 +69,34 @@ describe("arrive home, end to end", () => {
 });
 
 describe("tasks and follow-ups", () => {
-  it("starting laundry schedules the dryer nudge, and finishing early cancels it", async () => {
-    const s = setup();
+  it("a follow-up about a plugin item carries its buttons, and resolving the item cancels it", async () => {
+    const s = setup({
+      script: [
+        reply("tool_use", [toolUse("t1", "schedule_followup", { in_minutes: 45, message: "Move it to the dryer", plugin: "todo", item_id: "2" })]),
+        reply("tool_use", [toolUse("t2", "schedule_followup", { in_minutes: 45, message: "Check the oven", plugin: null, item_id: null })]),
+        reply("end_turn", []),
+      ],
+    });
     const headers = await pair(s.app);
-    const start = await s.app.inject({ method: "POST", url: "/tasks/2/action", headers, payload: { action: "start" } });
-    expect(start.statusCode).toBe(200);
+    await s.app.inject({ method: "POST", url: "/messages", headers, payload: { text: "laundry is in" } });
+    await s.engine.idle();
 
-    s.clock.now = new Date("2026-11-14T13:16:00Z");
+    s.clock.now = new Date("2026-11-14T12:46:00Z");
     await s.engine.runDueJobs();
-    expect(s.notifier.sent.map((m) => m.text)).toEqual(["Move it to the dryer"]);
-    expect(s.notifier.sent[0].items).toEqual([{ task_id: 2, title: "Move it to the dryer", steps: [] }]);
+    expect(s.notifier.sent.map((m) => m.text)).toEqual(["Move it to the dryer", "Check the oven"]);
+    expect(s.notifier.sent[0].items).toEqual([
+      { plugin: "todo", item_id: "2", title: "Move it to the dryer", steps: [], actions: [{ id: "done", label: "Done", style: "primary" }, { id: "skip", label: "Skip" }] },
+    ]);
+    expect(s.notifier.sent[1].items).toBeNull();
+  });
 
-    // A second start, then done before the timer: no nudge.
-    await s.app.inject({ method: "POST", url: "/tasks/2/action", headers, payload: { action: "start" } });
-    await s.app.inject({ method: "POST", url: "/tasks/2/action", headers, payload: { action: "done" } });
-    s.clock.now = new Date("2026-11-14T15:00:00Z");
-    await s.engine.runDueJobs();
-    expect(s.notifier.sent).toHaveLength(1);
+  it("cancels only the follow-ups about a resolved item", () => {
+    const s = setup();
+    s.db.addJob(new Date("2026-11-14T13:00:00Z"), "followup", { message: "a", plugin: "todo", item_id: "2" });
+    s.db.addJob(new Date("2026-11-14T13:00:00Z"), "followup", { message: "b", plugin: "todo", item_id: "3" });
+    s.db.addJob(new Date("2026-11-14T13:00:00Z"), "followup", { message: "c", plugin: "other", item_id: "2" });
+    expect(s.db.cancelJobsForItem("todo", "2", s.clock.now)).toBe(1);
+    expect(s.db.pendingJobs("followup").map((j) => j.payload.message)).toEqual(["b", "c"]);
   });
 
   it("a free-text reply marks tasks done through Claude", async () => {
@@ -116,7 +129,7 @@ describe("auth", () => {
   it("rejects a wrong pairing code and missing tokens", async () => {
     const s = setup();
     expect((await s.app.inject({ method: "POST", url: "/pair", payload: { code: "nope", name: "x" } })).statusCode).toBe(403);
-    expect((await s.app.inject({ method: "GET", url: "/today" })).statusCode).toBe(401);
+    expect((await s.app.inject({ method: "GET", url: "/messages" })).statusCode).toBe(401);
   });
 });
 

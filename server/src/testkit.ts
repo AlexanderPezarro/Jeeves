@@ -51,6 +51,9 @@ export class FakeTodo implements PluginHost {
       plugin_title: "Chores",
     }));
   }
+  itemActions(plugin: string) {
+    return plugin === "todo" ? [{ id: "done", label: "Done", style: "primary" as const }, { id: "skip", label: "Skip" }] : [];
+  }
   async call(plugin: string, tool: string, args: Record<string, unknown>): Promise<ToolResult> {
     this.calls.push({ plugin, tool, args });
     if (tool === "list_due_tasks") {

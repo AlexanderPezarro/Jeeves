@@ -12,6 +12,9 @@ const TOO_LATE_MS = 5 * 60_000;
 const ID = /^[A-Za-z0-9:._-]{1,128}$/;
 
 const itemSchema = z.object({
+  /** Which of the plugin's items this is about, so the notification gets the plugin's item_actions. */
+  item_id: z.string().min(1).max(128).optional(),
+  /** Older plugins: a numeric task id, read as item_id. */
   task_id: z.number().int().optional(),
   title: z.string().min(1).max(200),
   minutes: z.number().int().min(0).max(100_000).optional(),
@@ -32,10 +35,13 @@ const groupBody = z.object({
 
 type ReminderInput = z.infer<typeof putBody>;
 
-const toPayload = (r: Pick<ReminderInput, "text" | "level" | "items">): Omit<ReminderPayload, "snoozed_from"> => ({
+const toPayload = (plugin: string, r: Pick<ReminderInput, "text" | "level" | "items">): Omit<ReminderPayload, "snoozed_from"> => ({
   text: r.text,
   level: r.level,
-  items: r.items ?? [],
+  items: (r.items ?? []).map(({ task_id, item_id, ...i }) => {
+    const id = item_id ?? (task_id === undefined ? undefined : String(task_id));
+    return id === undefined ? i : { ...i, plugin, item_id: id };
+  }),
 });
 
 export interface ReminderDeps {
@@ -64,7 +70,7 @@ export function registerPluginReminders(app: FastifyInstance, { store, plugins, 
     }
     const at = new Date(body.data.at);
     if (at.getTime() < now().getTime() - TOO_LATE_MS) return reply.code(400).send({ error: "too_late", message: "that time has already passed" });
-    const res = db.upsertReminder(plugin.name, key.data, body.data.group ?? null, at, toPayload(body.data));
+    const res = db.upsertReminder(plugin.name, key.data, body.data.group ?? null, at, toPayload(plugin.name, body.data));
     if (res.status === "scheduled" && at.getTime() <= now().getTime()) await engine.runDueJobs();
     return { key: key.data, status: res.status, job_id: res.job_id, at: at.toISOString() };
   });
@@ -103,7 +109,7 @@ export function registerPluginReminders(app: FastifyInstance, { store, plugins, 
           out.dropped.push(r.key);
           continue;
         }
-        const res = db.upsertReminder(plugin.name, r.key, group.data, at, toPayload(r));
+        const res = db.upsertReminder(plugin.name, r.key, group.data, at, toPayload(plugin.name, r));
         if (res.status === "scheduled") {
           out.scheduled.push(r.key);
           if (at.getTime() <= nowMs) dueNow = true;

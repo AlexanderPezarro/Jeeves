@@ -1,6 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { PluginConfig } from "./config.js";
+import type { ItemAction } from "./db.js";
 import { manifestSchema, pluginBase, resolveSecrets, type EventInfo, type Manifest } from "./manifest.js";
 
 export interface PluginTool {
@@ -39,6 +40,16 @@ export interface PluginHost {
   listTools(): Promise<PluginTool[]>;
   call(plugin: string, tool: string, args: Record<string, unknown>): Promise<ToolResult>;
   status?(): PluginStatus[];
+  /** Notification buttons for a plugin's items, from its manifest. */
+  itemActions?(plugin: string): ItemAction[];
+}
+
+/** A list the app can show, served by a plugin. */
+export interface PluginView {
+  plugin: string;
+  id: string;
+  title: string;
+  empty_text?: string;
 }
 
 const SEP = "__";
@@ -161,9 +172,37 @@ export class McpPluginHost implements PluginHost {
     return this.plugins.flatMap((p) => (this.manifests.get(p.name)?.event_info ?? []).map((e) => ({ ...e, type: `${p.name}.${e.type}`, source: p.name })));
   }
 
-  /** The first configured plugin whose manifest says `today: true`. */
-  todayPlugin(): string | null {
-    return this.plugins.find((p) => this.manifests.get(p.name)?.today)?.name ?? null;
+  /** Every list view the plugins' manifests declare, in plugin order. */
+  views(): PluginView[] {
+    return this.plugins.flatMap((p) => (this.manifests.get(p.name)?.views ?? []).map((v) => ({ plugin: p.name, ...v })));
+  }
+
+  /** The notification buttons a plugin declares for its items (manifest `item_actions`). */
+  itemActions(name: string): ItemAction[] {
+    return this.manifests.get(name)?.item_actions ?? [];
+  }
+
+  /**
+   * A JSON request to the plugin's `/jeeves` API (views, actions), with its bearer token.
+   * Resolves with the status and parsed body; throws only when the plugin can't be reached.
+   */
+  async jeevesRequest(name: string, method: "GET" | "POST", path: string, body?: unknown): Promise<{ status: number; body: unknown }> {
+    const base = this.baseUrl(name);
+    if (!base) throw Object.assign(new Error(`no plugin ${name}`), { notFound: true });
+    const res = await this.fetch(`${base}/jeeves${path}`, {
+      method,
+      headers: { Authorization: `Bearer ${this.token(name)}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(10_000),
+    });
+    const text = await res.text();
+    let parsed: unknown = null;
+    try {
+      parsed = text ? JSON.parse(text) : null;
+    } catch {
+      parsed = { error: text.slice(0, 500) };
+    }
+    return { status: res.status, body: parsed };
   }
 
   /** Fetches and caches `GET <base>/jeeves/manifest`. A 404 or invalid manifest means tools-only. */

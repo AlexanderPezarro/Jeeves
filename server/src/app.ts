@@ -13,6 +13,7 @@ import type { Engine } from "./engine.js";
 import { isManagedHost, registerPluginEvents, registerPluginRoutes, registerUiProxy, tokenAuthorizer } from "./pluginapi.js";
 import type { PluginHost } from "./plugins.js";
 import { registerPluginReminders } from "./reminders.js";
+import { registerViewRoutes } from "./views.js";
 
 export interface AppDeps {
   db: Db;
@@ -144,24 +145,8 @@ export function buildApp({ db, engine, pairingCode, store, config = store, plugi
       return { event_id: event.id, fired: decisions.some((d) => d.fired) };
     });
 
-    authed.get("/today", async (_req, reply) => {
-      try {
-        return { tasks: await engine.today() };
-      } catch (e) {
-        return reply.code((e as { notFound?: boolean }).notFound ? 404 : 502).send({ error: (e as Error).message });
-      }
-    });
-
-    authed.post("/tasks/:id/action", async (req, reply) => {
-      const id = Number((req.params as { id: string }).id);
-      const body = z
-        .object({ action: z.enum(["start", "done", "skip", "snooze"]), minutes: z.number().int().min(1).max(1440).optional() })
-        .safeParse(req.body);
-      if (!Number.isInteger(id) || !body.success) return reply.code(400).send({ error: "invalid task action" });
-      const res = await engine.taskAction(id, body.data.action, body.data.minutes);
-      if (res.isError) return reply.code((res as { notFound?: boolean }).notFound ? 404 : 502).send({ error: res.text });
-      return JSON.parse(res.text);
-    });
+    // Plugin lists (the app's Today tab) and the buttons on their items and on notifications.
+    if (managed) registerViewRoutes(authed, { plugins: managed, db, now: clock });
 
     authed.get("/messages", async (req) => {
       const after = Number((req.query as { after?: string }).after ?? 0) || 0;
