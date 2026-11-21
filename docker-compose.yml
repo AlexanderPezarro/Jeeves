@@ -14,7 +14,8 @@ services:
       # old rules into workflows/ and the web UI edits these files. Must be writable by uid 1000.
       JEEVES_CONFIG_DIR: /config
       JEEVES_DB_PATH: /data/jeeves.db
-      # "cli" (default) drives Claude through the Claude Code CLI login mounted below; "api" uses ANTHROPIC_API_KEY.
+      # "cli" (default) drives Claude with your subscription: CLAUDE_CODE_OAUTH_TOKEN from .env
+      # (`claude setup-token`), else the Claude Code login mounted below. "api" uses ANTHROPIC_API_KEY.
       JEEVES_CLAUDE_BACKEND: ${JEEVES_CLAUDE_BACKEND:-cli}
       # Web UI auth: trust Authelia's Remote-User on /admin/api, but only from Caddy's address
       # (set JEEVES_TRUSTED_PROXY in .env). Off unless both are set.
@@ -26,7 +27,8 @@ services:
     volumes:
       - ./config:/config
       - jeeves-data:/data
-      # The host's Claude Code login (subscription credentials). Container user is uid 1000.
+      # Fallback when CLAUDE_CODE_OAUTH_TOKEN is unset: the host's Claude Code login. These sessions
+      # hit a time limit and can't be renewed unattended, so prefer the token. Container user is uid 1000.
       - ${CLAUDE_HOME:-~/.claude}:/home/node/.claude
       # Push: UnifiedPush through the ntfy service below. See "Push (ntfy + UnifiedPush)" in docs/deploy.md.
       # (The old FCM path still works: mount ./firebase.json and set FIREBASE_SERVICE_ACCOUNT in .env.)
