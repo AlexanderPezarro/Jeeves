@@ -6,7 +6,7 @@ import { buildApp } from "./app.js";
 import { ConfigStore } from "./configstore.js";
 import { Db } from "./db.js";
 import { Engine } from "./engine.js";
-import { migrateRules } from "./migrate.js";
+import { migrateRules, seedChatWorkflow } from "./migrate.js";
 import { makeNotifier } from "./notify.js";
 import { printVapidKeys } from "./vapid.js";
 import { McpPluginHost } from "./plugins.js";
@@ -41,6 +41,10 @@ async function main() {
   const dbPath = process.env.JEEVES_DB_PATH ?? "./data/jeeves.db";
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = new Db(dbPath);
+  if (seedChatWorkflow(dir, store.current.workflows, db)) {
+    store.reloadNow();
+    console.log("Added workflows/chat-reply.yaml: chat messages are now message.received events answered by a workflow");
+  }
 
   recordConfigActivity(store, db);
   const plugins = new McpPluginHost(store.current.plugins, {

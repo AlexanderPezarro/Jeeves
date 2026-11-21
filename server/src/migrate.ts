@@ -1,7 +1,8 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Document, isMap, isSeq, parseDocument, type YAMLMap } from "yaml";
-import { ruleSchema, workflowSchema, type Rule } from "./config.js";
+import { ruleSchema, workflowSchema, type Rule, type Workflow } from "./config.js";
+import type { Db } from "./db.js";
 
 export interface MigrationResult {
   written: string[];
@@ -74,4 +75,41 @@ export function migrateRules(dir: string, now = new Date()): MigrationResult {
   doc.comment = [doc.comment, ` rules moved to workflows/ on ${date}`].filter(Boolean).join("\n");
   writeFileSync(globalsPath, doc.toString());
   return result;
+}
+
+/** The default chat workflow, written once by seedChatWorkflow (same as config.example/workflows/chat-reply.yaml). */
+export const CHAT_REPLY_YAML = `# Answers what you write in the app's chat. Each message arrives as a message.received event
+# ({{event.text}}); change the prompt to change how Jeeves replies, or add conditions to route
+# some messages elsewhere.
+id: chat-reply
+description: Answer my chat messages
+cooldown: 0
+triggers:
+  - event: message.received
+steps:
+  - id: reply
+    claude:
+      prompt: |
+        I wrote to you: "{{event.text}}"
+        Work out what I mean and make any changes with the plugin tools (for example, mark the
+        tasks I mention as done), then reply once with send_message, briefly.
+      # Shows Claude the last few chat messages, so follow-ups like "and the bins" make sense.
+      history: true
+`;
+
+/**
+ * Chat messages used to be answered by a built-in Claude run; now they are `message.received`
+ * events. On the first start after that change, writes workflows/chat-reply.yaml so chat keeps
+ * working, unless a workflow already listens for the event. Runs once (a marker in the database),
+ * so deleting the file later is respected.
+ */
+export function seedChatWorkflow(dir: string, workflows: Pick<Workflow, "triggers">[], db: Db, now = new Date()): boolean {
+  if (db.getMeta("chat_workflow_seeded")) return false;
+  db.setMeta("chat_workflow_seeded", now.toISOString());
+  const listens = workflows.some((w) => w.triggers.some((t) => "event" in t && t.event === "message.received"));
+  const file = join(dir, "workflows", "chat-reply.yaml");
+  if (listens || existsSync(file)) return false;
+  mkdirSync(join(dir, "workflows"), { recursive: true });
+  writeFileSync(file, CHAT_REPLY_YAML);
+  return true;
 }

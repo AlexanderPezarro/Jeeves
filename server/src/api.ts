@@ -126,6 +126,12 @@ export const BUILTIN_EVENT_INFO: SourcedEventInfo[] = [
   },
   { type: "location.arrived", title: "Arrived at a place", description: null, payload_schema: null },
   { type: "location.left", title: "Left a place", description: null, payload_schema: null },
+  {
+    type: "message.received",
+    title: "Chat message",
+    description: "You wrote to Jeeves in the app's chat.",
+    payload_schema: obj({ text: { type: "string", description: "What you wrote" }, message_id: { type: "integer", description: "Stored message id" } }),
+  },
   { type: "manual.plan", title: "Plan button", description: 'The app\'s "Plan my day" button.', payload_schema: obj({}) },
 ].map((e) => ({ ...e, source: "builtin" }));
 

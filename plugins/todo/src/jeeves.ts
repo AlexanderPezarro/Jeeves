@@ -84,6 +84,16 @@ export const manifest = {
     skip_task: { title: "Skip a chore today", output_schema: taskSchema },
     snooze_task: { title: "Snooze a chore", output_schema: taskSchema },
   },
+  // Added to Claude's system prompt whenever this plugin's tools are offered.
+  instructions: [
+    "This plugin owns the user's chores and tasks. Task ids are numbers; when a message item is a task,",
+    'set plugin to "todo" and item_id to the task id as a string, so the phone shows Done / Snooze / Skip.',
+    "When asked for a plan or to-do list: look at the due tasks, then send one message listing them easiest",
+    "first so the user builds momentum. Leave out anything that won't fit the time they have. Give each item",
+    "2-4 concrete steps from the chore's how-to notes. Mention overdue tasks gently. If nothing is due, say so",
+    "briefly instead of inventing work.",
+    "Starting a timed chore schedules its follow-up reminders automatically; don't schedule them again.",
+  ].join("\n"),
   // Lists the app shows (GET /jeeves/views/<id>); each item carries its own buttons.
   views: [{ id: "today", title: "Today", empty_text: "Nothing due. Enjoy your evening." }],
   // Buttons on notifications about one of this plugin's items (POST /jeeves/actions).

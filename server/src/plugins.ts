@@ -1,5 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { PluginInstructions } from "./agent.js";
 import type { PluginConfig } from "./config.js";
 import type { ItemAction } from "./db.js";
 import { manifestSchema, pluginBase, resolveSecrets, type EventInfo, type Manifest } from "./manifest.js";
@@ -42,6 +43,8 @@ export interface PluginHost {
   status?(): PluginStatus[];
   /** Notification buttons for a plugin's items, from its manifest. */
   itemActions?(plugin: string): ItemAction[];
+  /** What each plugin tells Claude about its tools (manifest `instructions`). */
+  instructions?(): PluginInstructions[];
 }
 
 /** A list the app can show, served by a plugin. */
@@ -175,6 +178,14 @@ export class McpPluginHost implements PluginHost {
   /** Every list view the plugins' manifests declare, in plugin order. */
   views(): PluginView[] {
     return this.plugins.flatMap((p) => (this.manifests.get(p.name)?.views ?? []).map((v) => ({ plugin: p.name, ...v })));
+  }
+
+  /** Each plugin's guidance for Claude (manifest `instructions`), titled with its display name. */
+  instructions(): PluginInstructions[] {
+    return this.plugins.flatMap((p) => {
+      const m = this.manifests.get(p.name);
+      return m?.instructions ? [{ plugin: p.name, title: m.display_name, text: m.instructions }] : [];
+    });
   }
 
   /** The notification buttons a plugin declares for its items (manifest `item_actions`). */

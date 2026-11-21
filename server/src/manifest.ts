@@ -69,6 +69,8 @@ export const manifestSchema = z
     views: z.array(z.object({ id: z.string().regex(ID), title: z.string(), empty_text: z.string().optional() })).default([]),
     /** Buttons on notifications about one of this plugin's items; tapped ones go to `POST <base>/jeeves/actions`. */
     item_actions: z.array(itemActionSchema).max(3).default([]),
+    /** Guidance for Claude about this plugin's tools, added to the system prompt when they are offered. */
+    instructions: z.string().max(4000).optional(),
   })
   .transform(({ events, ...m }) => {
     const event_info: EventInfo[] = events.map((e) =>

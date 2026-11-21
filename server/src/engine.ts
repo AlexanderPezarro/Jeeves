@@ -7,6 +7,9 @@ import { RESUME_JOB, WorkflowRunner, type RunOutcome } from "./runner.js";
 import { evaluateWorkflows, scheduleEventType, type Decision } from "./triggers.js";
 import { localTime } from "./time.js";
 
+/** The event a chat message from the phone becomes. */
+export const CHAT_EVENT = "message.received";
+
 export interface DecisionView {
   workflow_id: string;
   fired: boolean;
@@ -113,12 +116,20 @@ export class Engine {
     return out;
   }
 
-  /** A free-text message from the phone. */
-  handleUserMessage(text: string) {
+  /**
+   * A free-text message from the phone: stored, then posted as a `message.received` event so a
+   * workflow (by default chat-reply) answers it. If none fires, the user is told why.
+   */
+  handleUserMessage(text: string, deviceId: number | null = null) {
     const msg = this.db.addMessage("in", text, null, null, this.now());
-    this.background(this.agent.run({ kind: "reply", prompt: `Alexander says: ${text}` }));
+    const { decisions } = this.handleEvent(CHAT_EVENT, { text, message_id: msg.id }, deviceId);
+    if (!decisions.some((d) => d.fired)) {
+      const why = decisions.length ? decisions.map((d) => `${d.workflow_id}: ${d.reason}`).join("; ") : "no workflow is triggered by message.received";
+      this.background(this.agent.sendMessage(`Nothing answered that message (${why}). Add or enable a workflow triggered by message.received, such as chat-reply.`, []));
+    }
     return msg;
   }
+
 
   /** Cancels a pending follow-up or wait. A cancelled wait cancels its workflow run. */
   cancelJob(id: number): boolean {

@@ -106,6 +106,10 @@ CREATE TABLE IF NOT EXISTS activity (
   detail TEXT
 );
 CREATE INDEX IF NOT EXISTS activity_time ON activity (at);
+CREATE TABLE IF NOT EXISTS meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS events_time ON events (received_at);
 `;
 
@@ -307,6 +311,16 @@ export class Db {
       if (!cols.some((c) => c.name === column)) this.sql.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
     }
     for (const ddl of ADDED_INDEXES) this.sql.exec(ddl);
+  }
+
+  // Meta: one-off markers such as "this upgrade step has run" ------------------
+
+  getMeta(key: string): string | undefined {
+    return (this.sql.prepare("SELECT value FROM meta WHERE key = ?").get(key) as { value: string } | undefined)?.value;
+  }
+
+  setMeta(key: string, value: string): void {
+    this.sql.prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
   }
 
   // Devices ---------------------------------------------------------------
