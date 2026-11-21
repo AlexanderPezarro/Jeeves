@@ -3,9 +3,9 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z, ZodError } from "zod";
 import type { TaskActions } from "./actions.js";
 import type { ReminderScheduler } from "./reminders.js";
-import { choreSchema, seedFromFile, slugify } from "./seed.js";
+import { choreSchema, normalizeChore, seedFromFile, slugify } from "./seed.js";
 import { settingsJsonSchema } from "./settings.js";
-import { ChoreExistsError, type Chore, type DueTask, type TodoStore } from "./store.js";
+import { ChoreExistsError, type DueTask, type TodoStore } from "./store.js";
 import { UI_CSS, UI_HTML, UI_JS } from "./ui.js";
 import { VERSION } from "./version.js";
 
@@ -63,23 +63,16 @@ export const manifest = {
   settings_schema: settingsJsonSchema,
   ui: { path: UI_PATH, title: "Chores" },
   events: [
-    { type: "task_started", title: "Chore started", description: "A chore was started (timed chores begin their timer).", payload_schema: taskEventPayload },
+    { type: "task_started", title: "Chore started", description: "A chore was started.", payload_schema: taskEventPayload },
     { type: "task_completed", title: "Chore done", description: "A chore was marked done.", payload_schema: taskEventPayload },
+    { type: "task_skipped", title: "Chore skipped", description: "A chore was skipped for today.", payload_schema: taskEventPayload },
   ],
   // Every MCP tool is a workflow step; these give them names and describe what they return.
   steps: {
     list_due_tasks: { title: "List due chores", output_schema: { type: "array", items: dueTaskSchema } },
     get_chore: { title: "Get a chore" },
-    start_task: {
-      title: "Start a chore",
-      output_schema: {
-        type: "object",
-        properties: {
-          task: taskSchema,
-          followups: { type: "array", items: { type: "object", properties: { at: str("ISO time"), message: str("Reminder text") } } },
-        },
-      },
-    },
+    get_task: { title: "Get today's task for a chore", output_schema: dueTaskSchema },
+    start_task: { title: "Start a chore", output_schema: taskSchema },
     complete_task: { title: "Mark a chore done", output_schema: taskSchema },
     skip_task: { title: "Skip a chore today", output_schema: taskSchema },
     snooze_task: { title: "Snooze a chore", output_schema: taskSchema },
@@ -92,12 +85,13 @@ export const manifest = {
     "first so the user builds momentum. Leave out anything that won't fit the time they have. Give each item",
     "2-4 concrete steps from the chore's how-to notes. Mention overdue tasks gently. If nothing is due, say so",
     "briefly instead of inventing work.",
-    "Starting a timed chore schedules its follow-up reminders automatically; don't schedule them again.",
+    "get_task returns today's instance for one chore (or null if it is not due).",
   ].join("\n"),
   // Lists the app shows (GET /jeeves/views/<id>); each item carries its own buttons.
   views: [{ id: "today", title: "Today", empty_text: "Nothing due. Enjoy your evening." }],
   // Buttons on notifications about one of this plugin's items (POST /jeeves/actions).
   item_actions: [
+    { id: "start", label: "Start", style: "secondary" },
     { id: "done", label: "Done", style: "primary" },
     { id: "snooze", label: "Snooze 15 min", args: { minutes: 15 } },
     { id: "skip", label: "Skip", style: "text" },
@@ -175,7 +169,7 @@ export async function jeevesRoutes(app: FastifyInstance, { store, token, choresF
     const id = Number(item);
     try {
       if (action === "start") {
-        const { task } = await actions.start(id);
+        const task = await actions.start(id);
         return { ok: true, resolved: false, message: `Started ${store.getChore(task.chore_id)?.name ?? "it"}` };
       }
       if (action === "snooze") {
@@ -214,7 +208,7 @@ export async function jeevesRoutes(app: FastifyInstance, { store, token, choresF
     const parsed = choreSchema.safeParse(withId);
     if (!parsed.success) return badRequest(reply, parsed.error);
     try {
-      const chore = store.createChore(parsed.data as Chore);
+      const chore = store.createChore(normalizeChore(parsed.data));
       await reminders?.sync();
       return reply.code(201).send({ chore });
     } catch (e) {
@@ -231,7 +225,7 @@ export async function jeevesRoutes(app: FastifyInstance, { store, token, choresF
     }
     const parsed = choreSchema.safeParse({ ...body, id });
     if (!parsed.success) return badRequest(reply, parsed.error);
-    const chore = store.updateChore(parsed.data as Chore);
+    const chore = store.updateChore(normalizeChore(parsed.data));
     if (!chore) return reply.code(404).send({ error: `No chore with id ${id}` });
     await reminders?.sync();
     return { chore };

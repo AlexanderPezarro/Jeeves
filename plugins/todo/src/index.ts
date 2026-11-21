@@ -72,6 +72,9 @@ async function main() {
   const dbPath = process.env.TODO_DB_PATH ?? "./data/todo.db";
   mkdirSync(dirname(dbPath), { recursive: true });
   const store = new TodoStore(dbPath);
+  for (const id of store.legacyTimerChores()) {
+    console.warn(`Chore ${id} has timer_steps, which are no longer used; move the timing into a workflow`);
+  }
   const seedPath = process.env.TODO_CHORES_FILE ?? "./chores.yaml";
   if (existsSync(seedPath)) {
     // Seed only: chores already in the DB (or deleted in the UI) are left alone.

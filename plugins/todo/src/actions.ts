@@ -8,14 +8,8 @@ export interface ActionDeps {
   now?: () => Date;
   /** Where task_started / task_completed events go (fire and forget). */
   events?: EventPoster;
-  /** Schedules timer steps and daily reminders on Jeeves. Without it, start returns plain followups. */
+  /** Keeps the daily reminders on Jeeves in step with task changes. */
   reminders?: ReminderScheduler;
-}
-
-export interface Followup {
-  at: string;
-  message: string;
-  scheduled?: boolean;
 }
 
 /**
@@ -24,48 +18,35 @@ export interface Followup {
  * timer reminders and the daily reminder set. Each throws on an unknown task or bad transition.
  */
 export function taskActions({ store, timeZone, now = () => new Date(), events, reminders }: ActionDeps) {
-  /** After a task is done or skipped: drop its timer reminders and refresh the daily set. */
-  const finishTimers = async (task: TaskInstance) => {
-    if (!reminders) return;
-    const chore = store.getChore(task.chore_id);
-    if (chore) await reminders.cancelTimers(task, chore);
-    await reminders.sync();
-  };
-
   return {
     listDue(date?: string): DueTask[] {
       return store.listDue(date ?? localDate(now(), timeZone), now());
     },
 
-    async start(taskId: number): Promise<{ task: TaskInstance; followups: Followup[] }> {
+    /** Today's instance of one chore (created if due), whatever its state, or null if it has none. */
+    getTask(choreId: string, date?: string): DueTask | null {
+      if (!store.getChore(choreId)) throw new Error(`No chore with id ${choreId}`);
+      return store.getTaskFor(choreId, date ?? localDate(now(), timeZone));
+    },
+
+    async start(taskId: number): Promise<TaskInstance> {
       const task = store.setState(taskId, "started", now());
-      const chore = store.getChore(task.chore_id)!;
-      let followups: Followup[];
-      if (reminders) {
-        followups = await reminders.scheduleTimer(task, chore);
-      } else {
-        let at = new Date(task.started_at!).getTime();
-        const steps = store.settings().followup_nudges ? chore.timer_steps : [];
-        followups = steps.map((s) => {
-          at += s.after_minutes * 60_000;
-          return { at: new Date(at).toISOString(), message: s.message };
-        });
-      }
       emitTaskEvent(store, events, "task_started", task);
       await reminders?.sync();
-      return { task, followups };
+      return task;
     },
 
     async complete(taskId: number): Promise<TaskInstance> {
       const task = store.setState(taskId, "done", now());
       emitTaskEvent(store, events, "task_completed", task);
-      await finishTimers(task);
+      await reminders?.sync();
       return task;
     },
 
     async skip(taskId: number): Promise<TaskInstance> {
       const task = store.setState(taskId, "skipped", now());
-      await finishTimers(task);
+      emitTaskEvent(store, events, "task_skipped", task);
+      await reminders?.sync();
       return task;
     },
 

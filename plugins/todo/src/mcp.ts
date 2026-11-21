@@ -47,7 +47,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
   server.registerTool(
     "get_chore",
     {
-      description: "Full details for one chore, including how-to steps, timer steps and recent history.",
+      description: "Full details for one chore, including how-to steps and recent history.",
       inputSchema: { chore_id: z.string() },
       annotations: { readOnlyHint: true },
     },
@@ -59,12 +59,27 @@ export function buildMcpServer(deps: McpDeps): McpServer {
   );
 
   server.registerTool(
-    "start_task",
+    "get_task",
     {
       description:
-        "Mark a task as started. Returns the chore's timer steps with absolute due times as `followups`. " +
-        "Followups with scheduled: true are already set up as reminders on Jeeves, so do NOT call " +
-        "schedule_followup for them; only schedule the ones with scheduled: false.",
+        "Today's instance of one chore (creating it if the chore is due), in any state: pending, started, done or skipped. " +
+        "Returns null if the chore is not due that day. Same fields as list_due_tasks.",
+      inputSchema: { chore_id: z.string(), date: z.string().optional().describe("YYYY-MM-DD; defaults to today") },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ chore_id, date }) => {
+      try {
+        return json(actions.getTask(chore_id, date) ?? null);
+      } catch (e) {
+        return fail((e as Error).message);
+      }
+    },
+  );
+
+  server.registerTool(
+    "start_task",
+    {
+      description: "Mark a task as started.",
       inputSchema: { task_id: z.number().int() },
     },
     async ({ task_id }) => attempt(() => actions.start(task_id)),

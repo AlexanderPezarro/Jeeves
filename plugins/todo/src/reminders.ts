@@ -1,4 +1,4 @@
-import { localDate, type Chore, type DueTask, type TaskInstance, type TodoStore } from "./store.js";
+import { localDate, type DueTask, type TodoStore } from "./store.js";
 import type { Level } from "./settings.js";
 
 /** Same shape as the server's plan items (kept short: push payloads are size limited). `item_id` is the task id. */
@@ -92,13 +92,6 @@ export interface ReminderSchedulerOptions {
   now?: () => Date;
 }
 
-export interface TimerFollowup {
-  at: string;
-  message: string;
-  /** True if Jeeves accepted the reminder, so the caller must not schedule a followup too. */
-  scheduled: boolean;
-}
-
 export class ReminderScheduler {
   private readonly store: TodoStore;
   private readonly client: ReminderClient;
@@ -136,17 +129,6 @@ export class ReminderScheduler {
         level: s.daily_due_level,
         text: `${open.length} ${open.length === 1 ? "chore" : "chores"} today`,
         items: open.map(brief),
-      });
-    }
-    for (const t of open) {
-      const chore = this.store.getChore(t.chore_id);
-      if (!chore?.remind_at) continue;
-      out.push({
-        key: `chore:${t.id}`,
-        at: at(chore.remind_at),
-        level: chore.remind_level ?? s.chore_default_level,
-        text: t.name,
-        items: [{ ...brief(t), steps: chore.how_to.length ? chore.how_to : undefined }],
       });
     }
     if (s.evening_update_enabled && open.length > 0) {
@@ -190,39 +172,6 @@ export class ReminderScheduler {
     }
     const ok = await this.client.putGroup(GROUP, this.computeDaily());
     this.dirty = !ok;
-  }
-
-  /**
-   * Schedule the chore's timer steps as `timer:<task_id>:<n>` reminders (no group). Failed PUTs are
-   * not retried: Jeeves falls back to a plain followup for steps reported as not scheduled.
-   */
-  async scheduleTimer(task: TaskInstance, chore: Chore): Promise<TimerFollowup[]> {
-    const s = this.store.settings();
-    if (!s.followup_nudges) return [];
-    let at = new Date(task.started_at ?? this.now().toISOString()).getTime();
-    const out: TimerFollowup[] = [];
-    let n = 0;
-    for (const step of chore.timer_steps) {
-      n++;
-      at += step.after_minutes * 60_000;
-      const iso = new Date(at).toISOString();
-      const scheduled = await this.client.put(`timer:${task.id}:${n}`, {
-        at: iso,
-        level: s.timer_level,
-        text: step.message,
-        items: [{ item_id: String(task.id), title: chore.name, minutes: chore.est_minutes }],
-      });
-      out.push({ at: iso, message: step.message, scheduled });
-    }
-    return out;
-  }
-
-  /** Cancel the timer reminders; failed deletes are retried by later syncs. */
-  async cancelTimers(task: TaskInstance, chore: Chore): Promise<void> {
-    for (let n = 1; n <= chore.timer_steps.length; n++) {
-      const key = `timer:${task.id}:${n}`;
-      if (!(await this.client.delete(key))) this.pendingDeletes.add(key);
-    }
   }
 
   start(): void {
