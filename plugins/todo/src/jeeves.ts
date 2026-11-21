@@ -1,10 +1,11 @@
 import { existsSync } from "node:fs";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { ZodError } from "zod";
+import { z, ZodError } from "zod";
+import type { TaskActions } from "./actions.js";
 import type { ReminderScheduler } from "./reminders.js";
 import { choreSchema, seedFromFile, slugify } from "./seed.js";
 import { settingsJsonSchema } from "./settings.js";
-import { ChoreExistsError, type Chore, type TodoStore } from "./store.js";
+import { ChoreExistsError, type Chore, type DueTask, type TodoStore } from "./store.js";
 import { UI_CSS, UI_HTML, UI_JS } from "./ui.js";
 import { VERSION } from "./version.js";
 
@@ -15,6 +16,8 @@ export interface JeevesRoutesOptions {
   choresFile?: string;
   /** Re-synced after settings and chore changes. */
   reminders?: ReminderScheduler;
+  /** Task actions for the Today view's and notifications' buttons (same side effects as the MCP tools). */
+  actions: TaskActions;
 }
 
 export const UI_PATH = "/jeeves/ui";
@@ -81,8 +84,51 @@ export const manifest = {
     skip_task: { title: "Skip a chore today", output_schema: taskSchema },
     snooze_task: { title: "Snooze a chore", output_schema: taskSchema },
   },
-  today: true,
+  // Lists the app shows (GET /jeeves/views/<id>); each item carries its own buttons.
+  views: [{ id: "today", title: "Today", empty_text: "Nothing due. Enjoy your evening." }],
+  // Buttons on notifications about one of this plugin's items (POST /jeeves/actions).
+  item_actions: [
+    { id: "done", label: "Done", style: "primary" },
+    { id: "snooze", label: "Snooze 15 min", args: { minutes: 15 } },
+    { id: "skip", label: "Skip", style: "text" },
+  ],
 };
+
+/** A due task as a generic view item: Start / Done / Skip until it is finished. */
+export function taskItem(t: DueTask) {
+  const finished = t.state === "done" || t.state === "skipped";
+  const note =
+    t.state === "done"
+      ? "Done"
+      : t.state === "skipped"
+        ? "Skipped"
+        : t.state === "started"
+          ? "In progress"
+          : t.overdue_days > 0
+            ? `Overdue by ${t.overdue_days} day${t.overdue_days > 1 ? "s" : ""}`
+            : null;
+  return {
+    id: String(t.id),
+    title: t.name,
+    meta: `${t.est_minutes} min · ${"●".repeat(t.effort)}`,
+    note,
+    detail: t.how_to,
+    finished,
+    actions: finished
+      ? []
+      : [
+          ...(t.state === "started" ? [] : [{ id: "start", label: "Start", style: "secondary" }]),
+          { id: "done", label: "Done", style: "primary" },
+          { id: "skip", label: "Skip", style: "text" },
+        ],
+  };
+}
+
+const actionBody = z.object({
+  item: z.string().regex(/^\d+$/, "a task id"),
+  action: z.enum(["start", "done", "skip", "snooze"]),
+  args: z.object({ minutes: z.number().int().min(1).max(24 * 60).optional() }).default({}),
+});
 
 type IdParams = { Params: { id: string } };
 
@@ -97,7 +143,7 @@ function badRequest(reply: FastifyReply, e: ZodError) {
  * Everything Jeeves talks to besides MCP: the manifest, settings, and the chore manager UI with its
  * JSON API. Registered under /jeeves and guarded by the same bearer token as /mcp.
  */
-export async function jeevesRoutes(app: FastifyInstance, { store, token, choresFile, reminders }: JeevesRoutesOptions) {
+export async function jeevesRoutes(app: FastifyInstance, { store, token, choresFile, reminders, actions }: JeevesRoutesOptions) {
   app.addHook("onRequest", async (req, reply) => {
     if (req.headers.authorization !== `Bearer ${token}`) {
       return reply.code(401).send({ error: "unauthorized" });
@@ -105,6 +151,33 @@ export async function jeevesRoutes(app: FastifyInstance, { store, token, choresF
   });
 
   app.get("/manifest", async () => manifest);
+
+  app.get("/views/:id", async (req, reply) => {
+    if ((req.params as { id: string }).id !== "today") return reply.code(404).send({ error: "no such view" });
+    return { items: actions.listDue().map(taskItem) };
+  });
+
+  /** A button tap in the app. `resolved` tells Jeeves the item is finished, so it drops follow-ups about it. */
+  app.post("/actions", async (req, reply) => {
+    const body = actionBody.safeParse(req.body ?? {});
+    if (!body.success) return badRequest(reply, body.error);
+    const { item, action, args } = body.data;
+    const id = Number(item);
+    try {
+      if (action === "start") {
+        const { task } = await actions.start(id);
+        return { ok: true, resolved: false, message: `Started ${store.getChore(task.chore_id)?.name ?? "it"}` };
+      }
+      if (action === "snooze") {
+        await actions.snooze(id, args.minutes);
+        return { ok: true, resolved: false };
+      }
+      await (action === "done" ? actions.complete(id) : actions.skip(id));
+      return { ok: true, resolved: true };
+    } catch (e) {
+      return reply.code(/no task/i.test((e as Error).message) ? 404 : 409).send({ error: (e as Error).message });
+    }
+  });
 
   app.get("/settings", async () => store.settings());
   app.put("/settings", async (req, reply) => {

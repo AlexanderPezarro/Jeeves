@@ -19,26 +19,57 @@ import java.io.IOException
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
+/** A button a plugin puts on one of its items. Tapping it posts {item, action: id, args} to the plugin. */
 @Serializable
-data class Task(
-    val id: Long,
-    val chore_id: String,
-    val name: String,
-    val effort: Int = 2,
-    val est_minutes: Int = 10,
-    val how_to: List<String> = emptyList(),
-    val state: String = "pending",
-    val overdue_days: Int = 0,
-    val completion_mode: String = "reply",
+data class ItemAction(
+    val id: String,
+    val label: String,
+    /** primary, secondary or text. */
+    val style: String? = null,
+    val args: JsonObject? = null,
 )
 
+/** One item in a message. [plugin] + [item_id] say which plugin item it is about; [actions] are its buttons. */
 @Serializable
 data class PlanItem(
-    val task_id: Long? = null,
+    val plugin: String? = null,
+    val item_id: String? = null,
     val title: String,
     val steps: List<String> = emptyList(),
     val minutes: Int? = null,
+    val actions: List<ItemAction> = emptyList(),
 )
+
+/** A list as a plugin's manifest declares it. */
+@Serializable
+data class ManifestView(val id: String, val title: String)
+
+/** A list a plugin serves (e.g. the to-do plugin's "Today"). */
+@Serializable
+data class PluginView(val plugin: String, val id: String, val title: String, val empty_text: String? = null)
+
+/** One row of a plugin view, with the buttons it has right now. */
+@Serializable
+data class ViewItem(
+    val id: String,
+    val title: String,
+    val meta: String? = null,
+    val note: String? = null,
+    val detail: List<String> = emptyList(),
+    val finished: Boolean = false,
+    val actions: List<ItemAction> = emptyList(),
+)
+
+@Serializable
+data class ViewContent(
+    val plugin: String,
+    val id: String,
+    val title: String,
+    val empty_text: String? = null,
+    val items: List<ViewItem> = emptyList(),
+)
+
+@Serializable data class ActionResult(val ok: Boolean = true, val message: String? = null, val resolved: Boolean = false)
 
 @Serializable
 data class ChatMessage(
@@ -55,7 +86,7 @@ data class ChatMessage(
 
 @Serializable private data class VapidKeyResponse(val public_key: String)
 @Serializable private data class PairResponse(val device_id: Long, val token: String)
-@Serializable private data class TodayResponse(val tasks: List<Task>)
+@Serializable private data class ViewsResponse(val views: List<PluginView>)
 @Serializable private data class MessagesResponse(val messages: List<ChatMessage>)
 
 // --- Timeline and activity -------------------------------------------------------------------
@@ -75,7 +106,7 @@ data class UpcomingItem(
     val next_step: String? = null,
     val dry_run: Boolean = false,
     val message: String? = null,
-    val task_id: Long? = null,
+    val item_id: String? = null,
     /** For reminders. */
     val plugin: String? = null,
     val key: String? = null,
@@ -229,7 +260,7 @@ data class PluginManifest(
     val settings_schema: JsonObject? = null,
     val ui: PluginUi? = null,
     val events: List<String> = emptyList(),
-    val today: Boolean = false,
+    val views: List<ManifestView> = emptyList(),
 )
 
 @Serializable
@@ -357,14 +388,19 @@ class Api(private val prefs: Prefs) {
         call("POST", "/plan")
     }
 
-    suspend fun today(): List<Task> = json.decodeFromString<TodayResponse>(call("GET", "/today")).tasks
+    /** The lists plugins serve, in order (the Today tab shows them). */
+    suspend fun views(): List<PluginView> = json.decodeFromString<ViewsResponse>(call("GET", "/views")).views
 
-    suspend fun taskAction(taskId: Long, action: String, minutes: Int? = null) {
-        call("POST", "/tasks/$taskId/action", buildJsonObject {
-            put("action", action)
-            if (minutes != null) put("minutes", minutes)
-        })
-    }
+    suspend fun view(plugin: String, id: String): ViewContent =
+        json.decodeFromString(call("GET", "/views/${enc(plugin)}/${enc(id)}"))
+
+    /** A button on a plugin item (in a view or on a notification). */
+    suspend fun itemAction(plugin: String, itemId: String, action: ItemAction): ActionResult =
+        json.decodeFromString(call("POST", "/plugins/${enc(plugin)}/actions", buildJsonObject {
+            put("item", itemId)
+            put("action", action.id)
+            put("args", action.args ?: JsonObject(emptyMap()))
+        }))
 
     /** Re-queues a reminder message to ring again in [minutes] minutes. */
     suspend fun snoozeMessage(id: Long, minutes: Int) {

@@ -11,7 +11,7 @@ import type { McpPluginHost } from "./plugins.js";
 /** The parts of McpPluginHost the plugin routes need (tests can pass the real host). */
 export type ManagedPluginHost = Pick<
   McpPluginHost,
-  "status" | "pluginConfig" | "token" | "baseUrl" | "manifest" | "refreshManifest" | "pushSettings" | "listTools"
+  "status" | "pluginConfig" | "token" | "baseUrl" | "manifest" | "refreshManifest" | "pushSettings" | "listTools" | "views" | "itemActions" | "jeevesRequest"
 >;
 
 export const isManagedHost = (p: unknown): p is ManagedPluginHost => !!p && typeof (p as ManagedPluginHost).pushSettings === "function";

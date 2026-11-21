@@ -48,13 +48,13 @@ async function main() {
       db.addActivity(reachable ? "plugin_connect" : "plugin_disconnect", name, { error: status.last_error, tool_count: status.tool_count }),
     settingsFor: (name) => store.current.plugin_settings[name],
     onManifest: (name, manifest) => {
-      // todo_plugin is superseded by a manifest with today: true; drop the key once one is found.
-      if (manifest?.today && store.current.todo_plugin !== undefined) {
+      // todo_plugin is superseded by plugin views; drop the key once a plugin declares one.
+      if (manifest?.views.length && store.current.todo_plugin !== undefined) {
         try {
           store.editGlobals(undefined, (doc) => {
             doc.deleteIn(["todo_plugin"]);
           });
-          console.log(`Removed todo_plugin from jeeves.yaml: ${name} serves the Today list (manifest today: true)`);
+          console.log(`Removed todo_plugin from jeeves.yaml: ${name} serves views now`);
         } catch (e) {
           console.warn(`Could not remove todo_plugin: ${(e as Error).message}`);
         }

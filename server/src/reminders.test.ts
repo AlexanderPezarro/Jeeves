@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
-import { scheduleFollowups } from "./agent.js";
+
 import { Db } from "./db.js";
 import { McpPluginHost } from "./plugins.js";
 import { setup } from "./testkit.js";
@@ -62,7 +62,7 @@ describe("plugin reminders: PUT", () => {
     const recent = await put("b", { at: at(-2), text: "Now", level: "loud", items: [{ task_id: 4, title: "Dishes" }] });
     expect(recent.statusCode).toBe(200);
     expect(s.notifier.sent).toHaveLength(1);
-    expect(s.notifier.sent[0]).toMatchObject({ text: "Now", level: "loud", due_at: at(-2), items: [{ task_id: 4, title: "Dishes", steps: [] }] });
+    expect(s.notifier.sent[0]).toMatchObject({ text: "Now", level: "loud", due_at: at(-2), items: [{ plugin: "todo", item_id: "4", title: "Dishes", steps: [] }] });
   });
 
   it("does not re-arm a reminder that fired or that the user cancelled, but a new time schedules again", async () => {
@@ -213,33 +213,17 @@ describe("plugin reminders: timeline", () => {
     const { s, put, pending } = world();
     const headers = await pairHeaders(s);
     const r = await put("chore:7", { at: at(60), text: "Bins", level: "loud", items: [{ task_id: 7, title: "Bins" }] });
-    await put("due:d", { at: at(30), text: "Chores", items: [{ task_id: 1, title: "a" }, { task_id: 2, title: "b" }] });
+    await put("due:d", { at: at(30), text: "Chores", items: [{ item_id: "1", title: "a" }, { item_id: "2", title: "b" }] });
     const up = upcoming({ db: s.db, config: s.config }, 24, NOW).items.filter((i) => i.kind === "reminder");
     expect(up).toEqual([
-      { kind: "reminder", at: at(30), job_id: expect.any(Number), plugin: "todo", key: "due:d", level: "notify", text: "Chores", task_id: null },
-      { kind: "reminder", at: at(60), job_id: r.json().job_id, plugin: "todo", key: "chore:7", level: "loud", text: "Bins", task_id: 7 },
+      { kind: "reminder", at: at(30), job_id: expect.any(Number), plugin: "todo", key: "due:d", level: "notify", text: "Chores", item_id: null },
+      { kind: "reminder", at: at(60), job_id: r.json().job_id, plugin: "todo", key: "chore:7", level: "loud", text: "Bins", item_id: "7" },
     ]);
     const http = (await s.app.inject({ method: "GET", url: "/timeline/upcoming?hours=24", headers })).json();
     expect(http.items.filter((i: { kind: string }) => i.kind === "reminder")).toHaveLength(2);
     expect((await s.app.inject({ method: "DELETE", url: `/jobs/${r.json().job_id}`, headers })).statusCode).toBe(200);
     expect(pending().map((j) => j.reminder_key)).toEqual(["due:d"]);
     expect(s.db.getJob(r.json().job_id)).toMatchObject({ cancel_reason: "user" });
-  });
-});
-
-describe("scheduleFollowups", () => {
-  it("ignores followups the plugin already scheduled as reminders", () => {
-    const db = new Db();
-    const result = JSON.stringify({
-      task: { id: 3 },
-      followups: [
-        { at: at(10), message: "a", scheduled: true },
-        { at: at(20), message: "b", scheduled: false },
-        { at: at(30), message: "c" },
-      ],
-    });
-    expect(scheduleFollowups(db, result)).toBe(2);
-    expect(db.pendingJobs("followup").map((j) => j.payload.message)).toEqual(["b", "c"]);
   });
 });
 

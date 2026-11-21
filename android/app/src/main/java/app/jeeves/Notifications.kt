@@ -18,6 +18,7 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
 import java.time.Instant
 
 object Notifications {
@@ -129,32 +130,39 @@ object Notifications {
             builder.setCategory(NotificationCompat.CATEGORY_ALARM)
         }
 
-        // A message about a single task (like a laundry nudge) gets buttons you can use without opening the app.
-        val single = items.singleOrNull()?.task_id
-        if (single != null) {
-            builder.addAction(0, "Done", ActionReceiver.intent(context, single, "done", notificationId))
-            builder.addAction(0, "Snooze 15 min", ActionReceiver.intent(context, single, "snooze", notificationId))
-            builder.addAction(0, "Skip", ActionReceiver.intent(context, single, "skip", notificationId))
+        // A message about a single plugin item (like a laundry nudge) gets that plugin's buttons, usable
+        // without opening the app. Android shows at most three.
+        val single = items.singleOrNull()
+        if (single?.plugin != null && single.item_id != null) {
+            single.actions.take(3).forEachIndexed { i, action ->
+                builder.addAction(0, action.label, ActionReceiver.intent(context, single.plugin, single.item_id, action, notificationId, i))
+            }
         }
 
         NotificationManagerCompat.from(context).notify(notificationId, builder.build())
     }
 }
 
-/** Handles the Done / Snooze / Skip buttons on a notification. */
+/** Handles a plugin's buttons on a notification: posts the action to the plugin through Jeeves. */
 class ActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        val taskId = intent.getLongExtra(EXTRA_TASK, -1)
-        val action = intent.getStringExtra(EXTRA_ACTION) ?: return
+        val plugin = intent.getStringExtra(EXTRA_PLUGIN) ?: return
+        val item = intent.getStringExtra(EXTRA_ITEM) ?: return
+        val action = intent.getStringExtra(EXTRA_ACTION)?.let {
+            try {
+                actionJson.decodeFromString<ItemAction>(it)
+            } catch (e: Exception) {
+                null
+            }
+        } ?: return
         val notificationId = intent.getIntExtra(EXTRA_NOTIFICATION, 0)
-        if (taskId < 0) return
         val pending = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                Api(Prefs(context)).taskAction(taskId, action, if (action == "snooze") 15 else null)
+                Api(Prefs(context)).itemAction(plugin, item, action)
                 NotificationManagerCompat.from(context).cancel(notificationId)
             } catch (e: Exception) {
-                Log.w("Jeeves", "Task action failed", e)
+                Log.w("Jeeves", "Item action failed", e)
             } finally {
                 pending.finish()
             }
@@ -162,23 +170,21 @@ class ActionReceiver : BroadcastReceiver() {
     }
 
     companion object {
-        private const val EXTRA_TASK = "task_id"
+        private const val EXTRA_PLUGIN = "plugin"
+        private const val EXTRA_ITEM = "item_id"
         private const val EXTRA_ACTION = "action"
         private const val EXTRA_NOTIFICATION = "notification_id"
+        private val actionJson = Json { ignoreUnknownKeys = true }
 
-        fun intent(context: Context, taskId: Long, action: String, notificationId: Int): PendingIntent {
+        fun intent(context: Context, plugin: String, itemId: String, action: ItemAction, notificationId: Int, index: Int): PendingIntent {
             val intent = Intent(context, ActionReceiver::class.java)
-                .putExtra(EXTRA_TASK, taskId)
-                .putExtra(EXTRA_ACTION, action)
+                .putExtra(EXTRA_PLUGIN, plugin)
+                .putExtra(EXTRA_ITEM, itemId)
+                .putExtra(EXTRA_ACTION, actionJson.encodeToString(ItemAction.serializer(), action))
                 .putExtra(EXTRA_NOTIFICATION, notificationId)
             // Distinct request codes so each button keeps its own extras.
-            val requestCode = notificationId * 10 + when (action) {
-                "done" -> 1
-                "snooze" -> 2
-                else -> 3
-            }
             return PendingIntent.getBroadcast(
-                context, requestCode, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                context, notificationId * 10 + index + 1, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
         }
     }

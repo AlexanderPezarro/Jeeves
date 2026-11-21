@@ -67,7 +67,7 @@ describe("ReminderScheduler.computeDaily", () => {
       level: "notify",
       text: `${open.length} chores today`,
     });
-    expect(out[0].items?.map((i) => i.task_id).sort()).toEqual(open.map((t) => t.id).sort());
+    expect(out[0].items?.map((i) => i.item_id).sort()).toEqual(open.map((t) => String(t.id)).sort());
     expect(out[1]).toMatchObject({ at: "2026-11-15T21:00:00.000Z", text: "Tick off what you did today" });
   });
 
@@ -103,7 +103,7 @@ describe("ReminderScheduler.computeDaily", () => {
     expect(out.find((r) => r.key === `chore:${laundryTask.id}`)).toMatchObject({
       at: "2026-11-15T18:00:00.000Z",
       level: "alarm",
-      items: [{ task_id: laundryTask.id }],
+      items: [{ item_id: String(laundryTask.id) }],
     });
     expect(out.find((r) => r.key === `chore:${dishesTask.id}`)).toMatchObject({ level: "loud" });
   });

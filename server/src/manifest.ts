@@ -7,6 +7,31 @@ import { z } from "zod";
  * A plugin without one (404 or invalid) is a tools-only plugin and still works.
  */
 const eventName = z.string().regex(/^[a-z0-9_.-]+$/);
+const ID = /^[a-z0-9_.-]{1,64}$/;
+
+/** A button on an item: the app posts `{item, action: id, args}` to the plugin when it is tapped. */
+export const itemActionSchema = z.object({
+  id: z.string().regex(ID),
+  label: z.string().min(1).max(40),
+  style: z.enum(["primary", "secondary", "text"]).optional(),
+  args: z.record(z.string(), z.unknown()).optional(),
+});
+
+/** One row of a plugin view. `actions` are this item's buttons right now (they can depend on its state). */
+export const viewItemSchema = z.object({
+  id: z.string().min(1).max(128),
+  title: z.string(),
+  /** Short right-hand text, e.g. "10 min". */
+  meta: z.string().nullable().optional(),
+  /** A status line under the title, e.g. "Overdue by 2 days". */
+  note: z.string().nullable().optional(),
+  /** Shown when the item is expanded. */
+  detail: z.array(z.string()).default([]),
+  /** Finished items are greyed out. */
+  finished: z.boolean().default(false),
+  actions: z.array(itemActionSchema).max(4).default([]),
+});
+export type ViewItem = z.output<typeof viewItemSchema>;
 const jsonSchema = z.record(z.string(), z.unknown());
 
 /** An event the plugin posts, with what the workflow editor shows for it. */
@@ -40,7 +65,10 @@ export const manifestSchema = z
      * can use as `steps.<id>.<field>`.
      */
     steps: z.record(z.string(), z.object({ title: z.string().optional(), output_schema: jsonSchema.optional() })).default({}),
-    today: z.boolean().default(false),
+    /** Lists the app shows (e.g. "Today"), served at `GET <base>/jeeves/views/<id>` as `{items: ViewItem[]}`. */
+    views: z.array(z.object({ id: z.string().regex(ID), title: z.string(), empty_text: z.string().optional() })).default([]),
+    /** Buttons on notifications about one of this plugin's items; tapped ones go to `POST <base>/jeeves/actions`. */
+    item_actions: z.array(itemActionSchema).max(3).default([]),
   })
   .transform(({ events, ...m }) => {
     const event_info: EventInfo[] = events.map((e) =>

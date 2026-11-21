@@ -85,7 +85,7 @@ export interface MessageRow {
   id: number;
   direction: "in" | "out";
   text: string;
-  items: { task_id?: number; title: string; steps?: string[]; minutes?: number }[] | null;
+  items: { plugin?: string; item_id?: string; title: string; steps?: string[]; minutes?: number }[] | null;
   run_id: number | null;
   created_at: string;
 }
@@ -137,7 +137,7 @@ export interface Evaluation {
 }
 
 export interface ActivityRow {
-  kind: "config_reload" | "config_error" | "plugin_connect" | "plugin_disconnect" | "reminder_fired";
+  kind: "config_reload" | "config_error" | "plugin_connect" | "plugin_disconnect" | "reminder_fired" | "item_action";
   at: string;
   id: number;
   subject: string | null;
@@ -162,8 +162,8 @@ export type UpcomingStatus = "will_run" | "will_skip" | "disabled" | "cap_reache
 export type UpcomingItem =
   | { kind: "schedule"; at: string; workflow_id: string; schedule: string; status: UpcomingStatus; reason: string | null }
   | { kind: "wait"; at: string; job_id: number; workflow_id: string; workflow_run_id: number; next_step: string | null; dry_run: boolean }
-  | { kind: "followup"; at: string; job_id: number; message: string; task_id: number | null }
-  | { kind: "reminder"; at: string; job_id: number; plugin: string; key: string; level: string; text: string; task_id: number | null };
+  | { kind: "followup"; at: string; job_id: number; message: string; plugin: string | null; item_id: string | null }
+  | { kind: "reminder"; at: string; job_id: number; plugin: string; key: string; level: string; text: string; item_id: string | null };
 
 export interface Upcoming {
   from: string;
@@ -246,7 +246,8 @@ export interface Manifest {
   settings_schema?: JsonSchema | null;
   ui?: { path: string; title: string } | null;
   events: string[];
-  today: boolean;
+  views?: { id: string; title: string }[];
+  item_actions?: { id: string; label: string }[];
 }
 
 export interface PluginEntry {

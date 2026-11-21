@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import Fastify from "fastify";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { httpEventPoster, type EventPoster } from "./events.js";
+import { taskActions } from "./actions.js";
 import { jeevesRoutes } from "./jeeves.js";
 import { buildMcpServer } from "./mcp.js";
 import { httpReminderClient, ReminderScheduler } from "./reminders.js";
@@ -39,7 +40,8 @@ export function buildApp({ store, token, timeZone, now, jeevesUrl, events, chore
 
   app.get("/health", async () => ({ ok: true }));
 
-  app.register(jeevesRoutes, { prefix: "/jeeves", store, token, choresFile, reminders });
+  const actions = taskActions({ store, timeZone, now, events: poster, reminders });
+  app.register(jeevesRoutes, { prefix: "/jeeves", store, token, choresFile, reminders, actions });
 
   // Stateless MCP over Streamable HTTP: one server + transport per request.
   app.post("/mcp", async (req, reply) => {

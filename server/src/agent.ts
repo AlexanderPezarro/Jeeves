@@ -64,7 +64,9 @@ export const BUILTIN_TOOLS: Anthropic.Beta.Messages.BetaTool[] = [
     name: "send_message",
     description:
       "Send a message to Alexander's phone. Use items for a to-do list: one item per task, easiest first, " +
-      "each with 2-4 short concrete steps. Use an empty items list for a plain reply.",
+      "each with 2-4 short concrete steps. Use an empty items list for a plain reply. When an item is one of a " +
+      "plugin's items (e.g. a to-do task), set plugin and item_id (the task id, as a string) so the phone shows " +
+      "that plugin's buttons on it.",
     strict: true,
     input_schema: {
       type: "object",
@@ -77,9 +79,10 @@ export const BUILTIN_TOOLS: Anthropic.Beta.Messages.BetaTool[] = [
           items: {
             type: "object",
             additionalProperties: false,
-            required: ["task_id", "title", "steps", "minutes"],
+            required: ["plugin", "item_id", "title", "steps", "minutes"],
             properties: {
-              task_id: { type: ["integer", "null"], description: "Task id from the to-do plugin, or null" },
+              plugin: { type: ["string", "null"], description: "Plugin the item belongs to, e.g. todo, or null" },
+              item_id: { type: ["string", "null"], description: "The item's id in that plugin (a to-do task id as a string), or null" },
               title: { type: "string" },
               steps: { type: "array", items: { type: "string" } },
               minutes: { type: ["integer", "null"] },
@@ -91,16 +94,19 @@ export const BUILTIN_TOOLS: Anthropic.Beta.Messages.BetaTool[] = [
   },
   {
     name: "schedule_followup",
-    description: "Schedule a nudge to Alexander's phone after a number of minutes, e.g. to check on a task.",
+    description:
+      "Schedule a nudge to Alexander's phone after a number of minutes, e.g. to check on a task. Set plugin and " +
+      "item_id when it is about a plugin's item: the nudge gets that plugin's buttons, and is dropped if the item is finished first.",
     strict: true,
     input_schema: {
       type: "object",
       additionalProperties: false,
-      required: ["in_minutes", "message", "task_id"],
+      required: ["in_minutes", "message", "plugin", "item_id"],
       properties: {
         in_minutes: { type: "integer", minimum: 1, maximum: 1440 },
         message: { type: "string" },
-        task_id: { type: ["integer", "null"] },
+        plugin: { type: ["string", "null"] },
+        item_id: { type: ["string", "null"] },
       },
     },
   },
@@ -324,10 +330,11 @@ export class Agent {
   private async callTool(name: string, input: Record<string, unknown>, scope: RunScope) {
     if (!scope.allowed.has(name)) return { text: `Tool ${name} is not available in this run`, isError: true };
     if (name === "send_message") {
-      const items = ((input.items ?? []) as (PlanItem & { task_id: number | null; minutes: number | null })[]).map((i) => ({
+      type In = { title: string; steps: string[]; plugin?: string | null; item_id?: string | number | null; minutes?: number | null };
+      const items: PlanItem[] = ((input.items ?? []) as In[]).map((i) => ({
         title: i.title,
         steps: i.steps,
-        ...(i.task_id !== null && i.task_id !== undefined ? { task_id: i.task_id } : {}),
+        ...(i.plugin && i.item_id !== null && i.item_id !== undefined ? { plugin: i.plugin, item_id: String(i.item_id) } : {}),
         ...(i.minutes !== null && i.minutes !== undefined ? { minutes: i.minutes } : {}),
       }));
       await this.deliver(String(input.text), items, scope);
@@ -338,15 +345,14 @@ export class Agent {
       if (scope.dryRun) {
         scope.recorded.push({ kind: "followup", text: String(input.message), in_minutes: Number(input.in_minutes) });
       } else {
-        this.deps.db.addJob(at, "followup", { message: input.message, task_id: input.task_id });
+        const about = typeof input.plugin === "string" && input.item_id !== null && input.item_id !== undefined ? { plugin: input.plugin, item_id: String(input.item_id) } : {};
+        this.deps.db.addJob(at, "followup", { message: input.message, ...about });
       }
       return { text: `Scheduled for ${at.toISOString()}.`, isError: false };
     }
     const target = splitToolName(name);
     if (!target) return { text: `Unknown tool ${name}`, isError: true };
-    const res = await this.deps.plugins.call(target.plugin, target.tool, input);
-    if (!res.isError && !scope.dryRun && target.tool === "start_task") scheduleFollowups(this.deps.db, res.text);
-    return res;
+    return this.deps.plugins.call(target.plugin, target.tool, input);
   }
 
   private async deliver(text: string, items: PlanItem[], scope: RunScope) {
@@ -357,13 +363,21 @@ export class Agent {
     await this.sendMessage(text, items, scope.runId);
   }
 
+  /** An item about a plugin's item gets that plugin's notification buttons (manifest `item_actions`). */
+  private withActions(item: PlanItem): PlanItem {
+    if (!item.plugin || !item.item_id || item.actions) return item;
+    const actions = this.deps.plugins.itemActions?.(item.plugin) ?? [];
+    return actions.length ? { ...item, actions } : item;
+  }
+
   async sendMessage(
     text: string,
     items: PlanItem[],
     runId: number | null = null,
     extra: { level?: ReminderLevel | null; due_at?: string | null; job_id?: number | null } = {},
   ) {
-    const msg = this.deps.db.addMessage("out", text, items.length ? items : null, runId, this.now(), extra);
+    const withActions = items.map((i) => this.withActions(i));
+    const msg = this.deps.db.addMessage("out", text, withActions.length ? withActions : null, runId, this.now(), extra);
     try {
       await this.deps.notifier.notify(msg);
     } catch (e) {
@@ -372,22 +386,4 @@ export class Agent {
     }
     return msg;
   }
-}
-
-/**
- * Turns the follow-ups a to-do plugin returns from start_task into scheduled jobs. Follow-ups the
- * plugin already scheduled itself as reminders (`scheduled: true`) are skipped.
- */
-export function scheduleFollowups(db: Db, startTaskResult: string): number {
-  let parsed: { task?: { id?: number }; followups?: { at: string; message: string; scheduled?: boolean }[] };
-  try {
-    parsed = JSON.parse(startTaskResult);
-  } catch {
-    return 0;
-  }
-  const followups = (parsed.followups ?? []).filter((f) => f.scheduled !== true);
-  for (const f of followups) {
-    db.addJob(new Date(f.at), "followup", { message: f.message, task_id: parsed.task?.id ?? null });
-  }
-  return followups.length;
 }

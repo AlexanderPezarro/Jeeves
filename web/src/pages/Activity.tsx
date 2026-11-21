@@ -177,6 +177,7 @@ function FeedRow({ item }: { item: FeedItem }) {
         plugin_connect: "Plugin connected",
         plugin_disconnect: "Plugin disconnected",
         reminder_fired: "Reminder fired",
+        item_action: "Button tapped",
       };
       const bad = item.kind === "config_error" || item.kind === "plugin_disconnect";
       summary = (

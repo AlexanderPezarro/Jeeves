@@ -135,7 +135,7 @@ export function DashboardPage() {
                     <>
                       <Badge status="info">follow-up</Badge>
                       <span>{it.message}</span>
-                      {it.task_id != null && <span className="small muted">task #{it.task_id}</span>}
+                      {it.item_id != null && <span className="small muted">item {it.item_id}</span>}
                       <button type="button" className="small-btn" onClick={() => cancel(it)}>
                         Cancel
                       </button>
@@ -147,7 +147,7 @@ export function DashboardPage() {
                       <span className="chip">{it.level}</span>
                       <span className="small muted">{it.plugin}</span>
                       <span>{it.text}</span>
-                      {it.task_id != null && <span className="small muted">task #{it.task_id}</span>}
+                      {it.item_id != null && <span className="small muted">item {it.item_id}</span>}
                       <button type="button" className="small-btn" onClick={() => cancel(it)}>
                         Cancel
                       </button>

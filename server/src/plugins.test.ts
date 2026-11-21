@@ -27,12 +27,17 @@ const MANIFEST: Manifest = {
   },
   ui: { path: "/jeeves/ui", title: "Fake page" },
   events: ["thing_happened"],
-  today: true,
+  views: [{ id: "list", title: "Things" }],
+  item_actions: [{ id: "ack", label: "Got it", style: "primary" }],
 };
 
 /** A plugin that only speaks the /jeeves contract (no MCP), recording what Jeeves sends it. */
 async function fakePlugin(manifest: Manifest | null = MANIFEST) {
-  const seen = { settings: [] as unknown[], ui: [] as { url: string; headers: Record<string, unknown>; body: string }[] };
+  const seen = {
+    settings: [] as unknown[],
+    ui: [] as { url: string; headers: Record<string, unknown>; body: string }[],
+    actions: [] as { item: string; action: string; args: Record<string, unknown> }[],
+  };
   const app = Fastify();
   app.addContentTypeParser("*", { parseAs: "string" }, (_r, b, d) => d(null, b));
   app.addHook("onRequest", async (req, reply) => {
@@ -54,6 +59,18 @@ async function fakePlugin(manifest: Manifest | null = MANIFEST) {
     },
   });
   app.get("/elsewhere", async () => "outside ui path");
+  app.get("/jeeves/views/:id", async (req, reply) => {
+    const id = (req.params as { id: string }).id;
+    if (id === "broken") return { items: [{ nope: true }] };
+    if (id !== "list") return reply.code(404).send({ error: "no such view" });
+    return { items: [{ id: "a", title: "Thing A", meta: "2 min", actions: [{ id: "ack", label: "Got it" }] }, { id: "b", title: "Thing B", finished: true }] };
+  });
+  app.post("/jeeves/actions", async (req, reply) => {
+    const body = (typeof req.body === "string" ? JSON.parse(req.body) : req.body) as { item: string; action: string; args: Record<string, unknown> };
+    seen.actions.push(body);
+    if (body.item === "missing") return reply.code(404).send({ error: "No thing missing" });
+    return { ok: true, resolved: body.action === "ack", message: `did ${body.action}` };
+  });
   const url = await app.listen({ host: "127.0.0.1", port: 0 });
   return { app, url, seen };
 }
@@ -81,11 +98,12 @@ async function world(manifest: Manifest | null = MANIFEST) {
 }
 
 describe("plugin manifest", () => {
-  it("fetches and caches the manifest, and picks the today: true plugin", async () => {
+  it("fetches and caches the manifest, with its views and item actions", async () => {
     const w = await world();
-    expect(await w.host.refreshManifest("fake")).toMatchObject({ display_name: "Fake", today: true });
+    expect(await w.host.refreshManifest("fake")).toMatchObject({ display_name: "Fake", views: [{ id: "list", title: "Things" }] });
     expect(w.host.manifestEvents()).toEqual(["fake.thing_happened"]);
-    expect(w.engine.todayPlugin()).toBe("fake");
+    expect(w.host.views()).toEqual([{ plugin: "fake", id: "list", title: "Things" }]);
+    expect(w.host.itemActions("fake")).toEqual([{ id: "ack", label: "Got it", style: "primary" }]);
     const list = (await w.app.inject({ method: "GET", url: "/plugins", headers: w.headers })).json();
     expect(list.plugins[0]).toMatchObject({ name: "fake", manifest: { ui: { title: "Fake page" } } });
   });
@@ -117,8 +135,50 @@ describe("plugin manifest", () => {
   it("treats a plugin without a manifest as tools-only", async () => {
     const w = await world(null);
     expect(await w.host.refreshManifest("fake")).toBeNull();
-    expect(w.engine.todayPlugin()).toBeNull();
-    expect((await w.app.inject({ method: "GET", url: "/today", headers: w.headers })).json()).toEqual({ error: "no Today plugin" });
+    expect((await w.app.inject({ method: "GET", url: "/views", headers: w.headers })).json()).toEqual({ views: [] });
+    expect((await w.app.inject({ method: "GET", url: "/views/fake/list", headers: w.headers })).statusCode).toBe(404);
+  });
+});
+
+describe("plugin views and actions", () => {
+  it("relays a declared view as generic items, and refuses undeclared or invalid ones", async () => {
+    const w = await world();
+    await w.host.refreshManifest("fake");
+    expect((await w.app.inject({ method: "GET", url: "/views", headers: w.headers })).json()).toEqual({ views: [{ plugin: "fake", id: "list", title: "Things" }] });
+    const view = await w.app.inject({ method: "GET", url: "/views/fake/list", headers: w.headers });
+    expect(view.statusCode).toBe(200);
+    expect(view.json()).toEqual({
+      plugin: "fake",
+      id: "list",
+      title: "Things",
+      items: [
+        { id: "a", title: "Thing A", meta: "2 min", detail: [], finished: false, actions: [{ id: "ack", label: "Got it" }] },
+        { id: "b", title: "Thing B", detail: [], finished: true, actions: [] },
+      ],
+    });
+    // Not declared in the manifest: not relayed, even though the plugin would answer.
+    expect((await w.app.inject({ method: "GET", url: "/views/fake/broken", headers: w.headers })).statusCode).toBe(404);
+    expect((await w.app.inject({ method: "GET", url: "/views/fake/list" })).statusCode).toBe(401);
+  });
+
+  it("forwards a button tap, cancels follow-ups when the item is resolved, and passes on the plugin's 4xx", async () => {
+    const w = await world();
+    await w.host.refreshManifest("fake");
+    w.db.addJob(new Date(Date.now() + 3600_000), "followup", { message: "still there?", plugin: "fake", item_id: "a" });
+    const tap = await w.app.inject({ method: "POST", url: "/plugins/fake/actions", headers: w.headers, payload: { item: "a", action: "ack" } });
+    expect(tap.json()).toEqual({ ok: true, message: "did ack", resolved: true });
+    expect(w.plugin.seen.actions).toEqual([{ item: "a", action: "ack", args: {} }]);
+    expect(w.db.pendingJobs("followup")).toHaveLength(0);
+
+    const later = await w.app.inject({ method: "POST", url: "/plugins/fake/actions", headers: w.headers, payload: { item: "a", action: "later", args: { minutes: 5 } } });
+    expect(later.json()).toMatchObject({ resolved: false });
+    expect(w.plugin.seen.actions[1]).toEqual({ item: "a", action: "later", args: { minutes: 5 } });
+
+    const missing = await w.app.inject({ method: "POST", url: "/plugins/fake/actions", headers: w.headers, payload: { item: "missing", action: "ack" } });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json().message).toBe("No thing missing");
+    expect((await w.app.inject({ method: "POST", url: "/plugins/nope/actions", headers: w.headers, payload: { item: "a", action: "ack" } })).statusCode).toBe(404);
+    expect((await w.app.inject({ method: "POST", url: "/plugins/fake/actions", headers: w.headers, payload: { action: "ack" } })).statusCode).toBe(400);
   });
 });
 

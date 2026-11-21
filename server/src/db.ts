@@ -168,12 +168,25 @@ export interface EventRow {
   received_at: string;
 }
 
-/** One item in a plan sent to the phone. */
+/** A button the app shows on an item; tapping it posts `{item, action: id, args}` to the item's plugin. */
+export interface ItemAction {
+  id: string;
+  label: string;
+  style?: "primary" | "secondary" | "text";
+  args?: Record<string, unknown>;
+}
+
+/**
+ * One item in a message sent to the phone. `plugin` + `item_id` say what it is about (e.g. a to-do
+ * task); the server fills `actions` from that plugin's manifest `item_actions`.
+ */
 export interface PlanItem {
-  task_id?: number;
+  plugin?: string;
+  item_id?: string;
   title: string;
   steps: string[];
   minutes?: number;
+  actions?: ItemAction[];
 }
 
 export interface MessageRow {
@@ -213,7 +226,7 @@ export interface EvaluationRow {
   simulated: boolean;
 }
 
-export type ActivityKind = "config_reload" | "config_error" | "plugin_connect" | "plugin_disconnect" | "reminder_fired";
+export type ActivityKind = "config_reload" | "config_error" | "plugin_connect" | "plugin_disconnect" | "reminder_fired" | "item_action";
 
 export interface ActivityRow {
   id: number;
@@ -742,11 +755,13 @@ export class Db {
     })();
   }
 
-  /** Cancels pending follow-ups for a task, e.g. when it is marked done early. */
-  cancelJobsForTask(taskId: number, now = new Date()): void {
-    this.sql
-      .prepare("UPDATE jobs SET done_at = ? WHERE done_at IS NULL AND json_extract(payload, '$.task_id') = ?")
-      .run(now.toISOString(), taskId);
+  /** Cancels pending follow-ups about a plugin's item, e.g. when a task is marked done early. */
+  cancelJobsForItem(plugin: string, itemId: string, now = new Date()): number {
+    return this.sql
+      .prepare(
+        "UPDATE jobs SET done_at = ? WHERE done_at IS NULL AND kind = 'followup' AND json_extract(payload, '$.plugin') = ? AND json_extract(payload, '$.item_id') = ?",
+      )
+      .run(now.toISOString(), plugin, itemId).changes as number;
   }
 
   getJob(id: number): (Job & { done_at: string | null; cancelled_at: string | null }) | undefined {
