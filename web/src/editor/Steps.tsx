@@ -14,7 +14,28 @@ const TYPE_LABEL: Record<StepType, string> = {
   stop: "Stop",
 };
 
-const TEMPLATE_HINT = "Use {{event.field}} or {{steps.<earlier id>.field}} to insert values.";
+/** How to insert values, plus the fields this workflow's events and steps provide (from their schemas). */
+function TemplateHint() {
+  const { fieldPaths } = useEditorData();
+  const shown = fieldPaths.filter((p) => !/\.\d+$/.test(p)).slice(0, 8);
+  return (
+    <>
+      Use {"{{event.field}}"} or {"{{steps.<earlier id>.field}}"} to insert values.
+      {shown.length > 0 && (
+        <>
+          {" "}Available: {shown.map((p, i) => (
+            <span key={p}>
+              {i > 0 && ", "}
+              <code>{p}</code>
+            </span>
+          ))}
+          {fieldPaths.length > shown.length && " …"}
+        </>
+      )}
+    </>
+  );
+}
+const TEMPLATE_HINT = <TemplateHint />;
 
 export function StepList({ steps, onChange, path, label }: { steps: Step[]; onChange: (s: Step[]) => void; path: Path; label: string }) {
   const { allStepIds, tools } = useEditorData();
@@ -291,10 +312,10 @@ function CallStep({ step, onChange, path }: { step: Extract<Step, { call: unknow
         >
           {!tool && <option value={key}>{c.plugin || c.tool ? `${c.plugin}/${c.tool} (not available now)` : "Pick a tool…"}</option>}
           {[...byPlugin].map(([plugin, list]) => (
-            <optgroup key={plugin} label={plugin}>
+            <optgroup key={plugin} label={list[0]?.plugin_title ?? plugin}>
               {list.map((t) => (
                 <option key={t.name} value={`${t.plugin}/${t.tool}`}>
-                  {t.tool}
+                  {t.title ?? t.tool}
                   {t.read_only ? " (read-only)" : ""}
                 </option>
               ))}

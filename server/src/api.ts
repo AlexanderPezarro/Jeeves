@@ -4,6 +4,7 @@ import { formatIssues, type ConfigSource } from "./config.js";
 import { ConfigWriteError, type ConfigStore } from "./configstore.js";
 import type { Db } from "./db.js";
 import type { Engine } from "./engine.js";
+import type { EventInfo } from "./manifest.js";
 import type { PluginHost } from "./plugins.js";
 import { activityFeed, health, runDetailById, upcoming } from "./timeline.js";
 
@@ -103,8 +104,33 @@ export function registerConfigRoutes(app: FastifyInstance, { db, store }: ApiDep
   });
 }
 
+type SourcedEventInfo = EventInfo & { source: string };
+const obj = (properties: Record<string, unknown>) => ({ type: "object", properties });
+
+/** Built-in events the trigger picker always offers, with the payload the phone sends. */
+export const BUILTIN_EVENT_INFO: SourcedEventInfo[] = [
+  {
+    type: "wifi.connected",
+    title: "Joined a Wi-Fi network",
+    description: "The phone joined one of the Wi-Fi networks it watches.",
+    payload_schema: obj({
+      ssid: { type: "string", description: "Network name" },
+      away_minutes: { type: "integer", description: "Minutes since the phone last left this network" },
+    }),
+  },
+  {
+    type: "wifi.disconnected",
+    title: "Left a Wi-Fi network",
+    description: "The phone left one of the Wi-Fi networks it watches.",
+    payload_schema: obj({ ssid: { type: "string", description: "Network name" } }),
+  },
+  { type: "location.arrived", title: "Arrived at a place", description: null, payload_schema: null },
+  { type: "location.left", title: "Left a place", description: null, payload_schema: null },
+  { type: "manual.plan", title: "Plan button", description: 'The app\'s "Plan my day" button.', payload_schema: obj({}) },
+].map((e) => ({ ...e, source: "builtin" }));
+
 /** Built-in event types the trigger picker always offers. */
-export const BUILTIN_EVENTS = ["wifi.connected", "wifi.disconnected", "location.arrived", "location.left", "manual.plan"];
+export const BUILTIN_EVENTS = BUILTIN_EVENT_INFO.map((e) => e.type);
 
 /** Observability, simulate and run-now routes. Registered under both auth scopes, like the config routes. */
 export function registerObservabilityRoutes(
@@ -179,9 +205,14 @@ export function registerObservabilityRoutes(
 
   app.get("/tools", async () => ({ tools: await plugins.listTools() }));
 
+  /**
+   * `event_types`: every type a trigger can wait for (built-in, declared by plugins, or seen).
+   * `events`: the described ones, with payload schemas for the editor's field suggestions.
+   */
   app.get("/event-types", async () => {
     const seen = db.eventTypes().filter((t) => !t.startsWith("schedule.") && t !== "manual.run");
-    const pluginEvents = (plugins as { manifestEvents?: () => string[] }).manifestEvents?.() ?? [];
-    return { event_types: [...new Set([...BUILTIN_EVENTS, ...pluginEvents, ...seen])] };
+    const pluginEvents = (plugins as { manifestEventInfo?: () => SourcedEventInfo[] }).manifestEventInfo?.() ?? [];
+    const events = [...BUILTIN_EVENT_INFO, ...pluginEvents];
+    return { event_types: [...new Set([...events.map((e) => e.type), ...seen])], events };
   });
 }

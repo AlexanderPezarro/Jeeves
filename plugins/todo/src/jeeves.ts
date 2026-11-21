@@ -19,13 +19,68 @@ export interface JeevesRoutesOptions {
 
 export const UI_PATH = "/jeeves/ui";
 
+const str = (description: string) => ({ type: "string", description });
+const int = (description: string) => ({ type: "integer", description });
+
+/** A task instance as the tools return it. */
+const taskSchema = {
+  type: "object",
+  properties: {
+    id: int("Task id, for start/complete/skip/snooze"),
+    chore_id: str("Chore id"),
+    due_date: str("YYYY-MM-DD"),
+    state: { type: "string", enum: ["pending", "started", "done", "skipped"] },
+    started_at: str("When it was started (ISO time)"),
+    done_at: str("When it was finished (ISO time)"),
+    snoozed_until: str("Hidden from the due list until (ISO time)"),
+  },
+};
+
+const dueTaskSchema = {
+  type: "object",
+  properties: {
+    ...taskSchema.properties,
+    name: str("Chore name"),
+    effort: int("1 (trivial) to 5 (hard)"),
+    est_minutes: int("Estimated minutes"),
+    how_to: { type: "array", items: { type: "string" }, description: "How-to steps" },
+    overdue_days: int("Days past its due date"),
+  },
+};
+
+const taskEventPayload = {
+  type: "object",
+  properties: { task_id: int("Task id"), chore_id: str("Chore id"), name: str("Chore name") },
+};
+
 export const manifest = {
   name: "todo",
   display_name: "Chores",
   version: VERSION,
   settings_schema: settingsJsonSchema,
   ui: { path: UI_PATH, title: "Chores" },
-  events: ["task_started", "task_completed"],
+  events: [
+    { type: "task_started", title: "Chore started", description: "A chore was started (timed chores begin their timer).", payload_schema: taskEventPayload },
+    { type: "task_completed", title: "Chore done", description: "A chore was marked done.", payload_schema: taskEventPayload },
+  ],
+  // Every MCP tool is a workflow step; these give them names and describe what they return.
+  steps: {
+    list_due_tasks: { title: "List due chores", output_schema: { type: "array", items: dueTaskSchema } },
+    get_chore: { title: "Get a chore" },
+    start_task: {
+      title: "Start a chore",
+      output_schema: {
+        type: "object",
+        properties: {
+          task: taskSchema,
+          followups: { type: "array", items: { type: "object", properties: { at: str("ISO time"), message: str("Reminder text") } } },
+        },
+      },
+    },
+    complete_task: { title: "Mark a chore done", output_schema: taskSchema },
+    skip_task: { title: "Skip a chore today", output_schema: taskSchema },
+    snooze_task: { title: "Snooze a chore", output_schema: taskSchema },
+  },
   today: true,
 };
 

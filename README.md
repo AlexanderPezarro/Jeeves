@@ -97,6 +97,25 @@ same contract without changes to the server.
 
 Plugins can also publish a manifest at `GET /jeeves/manifest`, which declares settings (a JSON
 Schema), a UI page and the events they emit; a plugin without one is tools-only and still works.
+
+**Workflow steps are the plugin's MCP tools.** The manifest can describe them for the editor:
+
+```jsonc
+{
+  "steps": {
+    "list_due_tasks": { "title": "List due chores", "output_schema": { "type": "array", "items": { … } } }
+  },
+  "events": [
+    "plain_name",
+    { "type": "task_completed", "title": "Chore done", "description": "…", "payload_schema": { "type": "object", "properties": { … } } }
+  ]
+}
+```
+
+`title` falls back to the MCP tool's title and `output_schema` to its `outputSchema`. The editor
+shows the titles in the step picker and offers `event.<field>` / `steps.<id>.<field>` paths from
+these schemas in conditions and templates. `GET /event-types` returns them as `events`.
+
 Settings are stored in `config/plugins/<name>.yaml` (fields marked `format: secret` are stored as
 `{env: VAR_NAME}`, with the value in `.env`) and pushed to `PUT /jeeves/settings` on save and
 whenever the plugin (re)connects. The plugin's page is proxied at `/admin/api/plugins/<name>/ui/`

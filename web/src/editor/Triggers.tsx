@@ -60,9 +60,10 @@ function SsidInput({ value, onChange }: { value: When["ssid"]; onChange: (v: Whe
 }
 
 function TriggerCard({ value, onChange, onRemove, path }: { value: Trigger; onChange: (t: Trigger) => void; onRemove?: () => void; path: Path }) {
-  const { eventTypes } = useEditorData();
+  const { eventTypes, events } = useEditorData();
   const listId = useId();
   const isSchedule = "schedule" in value;
+  const info = "event" in value ? events.find((e) => e.type === value.event) : undefined;
   const when = value.when ?? {};
   const setWhen = (w: When) => {
     const c = compact(w as Record<string, unknown>) as When;
@@ -98,12 +99,26 @@ function TriggerCard({ value, onChange, onRemove, path }: { value: Trigger; onCh
           <CronPreview expr={value.schedule} />
         </Field>
       ) : (
-        <Field label="Event type" path={[...path, "event"]} hint="Pick a known type or type your own (plugin events look like todo.task_started).">
+        <Field
+          label="Event type"
+          path={[...path, "event"]}
+          hint={
+            info ? (
+              <>
+                <strong>{info.title ?? info.type}</strong>
+                {info.description ? ` — ${info.description}` : ""}
+              </>
+            ) : (
+              "Pick a known type or type your own (plugin events look like todo.task_started)."
+            )
+          }
+        >
           <input aria-label="Event type" className="mono" list={listId} value={value.event} onChange={(e) => onChange({ ...value, event: e.target.value.trim() })} />
           <datalist id={listId}>
-            {eventTypes.map((t) => (
-              <option key={t} value={t} />
-            ))}
+            {eventTypes.map((t) => {
+              const title = events.find((e) => e.type === t)?.title;
+              return <option key={t} value={t} label={title ?? undefined} />;
+            })}
           </datalist>
         </Field>
       )}

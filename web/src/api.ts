@@ -2,6 +2,7 @@ import type {
   ClaudeRun,
   ConfigError,
   Decision,
+  EventInfo,
   FeedItem,
   Globals,
   Health,
@@ -132,7 +133,7 @@ export const api = {
   cancelJob: (id: number) => request<{ ok: true }>("DELETE", `/jobs/${id}`),
 
   tools: () => request<{ tools: Tool[] }>("GET", "/tools"),
-  eventTypes: () => request<{ event_types: string[] }>("GET", "/event-types"),
+  eventTypes: () => request<{ event_types: string[]; events?: EventInfo[] }>("GET", "/event-types"),
 
   plugins: () => request<{ plugins: PluginEntry[]; hash: string }>("GET", "/plugins"),
   addPlugin: (p: { name: string; url: string; token_env: string }, hash: string | null) => request<{ plugin: unknown }>("POST", "/plugins", { ...p, hash }),

@@ -6,7 +6,7 @@ import { UiTokens } from "./auth.js";
 import { ConfigStore } from "./configstore.js";
 import { Db } from "./db.js";
 import { Engine } from "./engine.js";
-import type { Manifest } from "./manifest.js";
+import type { ManifestInput as Manifest } from "./manifest.js";
 import { McpPluginHost } from "./plugins.js";
 import { pair, RecordingNotifier, scriptedClaude, tmpConfigDir } from "./testkit.js";
 
@@ -88,6 +88,30 @@ describe("plugin manifest", () => {
     expect(w.engine.todayPlugin()).toBe("fake");
     const list = (await w.app.inject({ method: "GET", url: "/plugins", headers: w.headers })).json();
     expect(list.plugins[0]).toMatchObject({ name: "fake", manifest: { ui: { title: "Fake page" } } });
+  });
+
+  it("accepts described events and step metadata, and serves them to the editor", async () => {
+    const w = await world({
+      ...MANIFEST,
+      events: ["thing_happened", { type: "door_opened", title: "Door opened", payload_schema: { type: "object", properties: { door: { type: "string" } } } }],
+      steps: { ping: { title: "Ping it", output_schema: { type: "object", properties: { pong: { type: "boolean" } } } } },
+    });
+    const m = await w.host.refreshManifest("fake");
+    expect(m?.events).toEqual(["thing_happened", "door_opened"]);
+    expect(m?.steps.ping.title).toBe("Ping it");
+    const types = (await w.app.inject({ method: "GET", url: "/event-types", headers: w.headers })).json();
+    expect(types.event_types).toEqual(expect.arrayContaining(["wifi.connected", "fake.thing_happened", "fake.door_opened"]));
+    expect(types.events).toContainEqual({
+      type: "fake.door_opened",
+      title: "Door opened",
+      description: null,
+      payload_schema: { type: "object", properties: { door: { type: "string" } } },
+      source: "fake",
+    });
+    expect(types.events.find((e: { type: string }) => e.type === "wifi.connected").payload_schema.properties.ssid.type).toBe("string");
+    // A plugin event declared as an object is accepted on /plugin-events like a plain name.
+    const post = await w.app.inject({ method: "POST", url: "/plugin-events", headers: { authorization: `Bearer ${TOKEN}` }, payload: { type: "door_opened", payload: { door: "front" } } });
+    expect(post.statusCode).toBe(200);
   });
 
   it("treats a plugin without a manifest as tools-only", async () => {
