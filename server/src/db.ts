@@ -116,7 +116,34 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["devices", "push_endpoint", "TEXT"],
   ["devices", "push_p256dh", "TEXT"],
   ["devices", "push_auth", "TEXT"],
+  ["jobs", "plugin", "TEXT"],
+  ["jobs", "reminder_key", "TEXT"],
+  ["jobs", "reminder_group", "TEXT"],
+  ["jobs", "cancel_reason", "TEXT"],
+  ["messages", "level", "TEXT"],
+  ["messages", "due_at", "TEXT"],
+  ["messages", "job_id", "INTEGER"],
 ];
+
+/** Indexes on added columns: these can't live in SCHEMA because old databases get the columns later. */
+const ADDED_INDEXES = [
+  // One pending reminder per plugin and key; upserts update it in place.
+  `CREATE UNIQUE INDEX IF NOT EXISTS jobs_reminder_pending ON jobs (plugin, reminder_key)
+     WHERE kind = 'reminder' AND done_at IS NULL AND cancelled_at IS NULL`,
+];
+
+export type ReminderLevel = "notify" | "loud" | "alarm";
+export type CancelReason = "user" | "replaced" | "deleted";
+
+export interface ReminderPayload {
+  text: string;
+  level: ReminderLevel;
+  items: PlanItem[];
+  /** Set on a snoozed reminder: the time the plugin originally asked for, so a re-sync doesn't undo the snooze. */
+  snoozed_from?: string;
+}
+
+export type UpsertStatus = "scheduled" | "unchanged" | "kept_snooze" | "already_done";
 
 export interface Device {
   id: number;
@@ -156,6 +183,12 @@ export interface MessageRow {
   items: PlanItem[] | null;
   run_id: number | null;
   created_at: string;
+  /** How loudly the phone should announce it (reminders only). */
+  level: ReminderLevel | null;
+  /** When a reminder was meant to ring; the phone downgrades an alarm that is much later than this. */
+  due_at: string | null;
+  /** The reminder job that produced this message. */
+  job_id: number | null;
 }
 
 export interface Job {
@@ -163,6 +196,10 @@ export interface Job {
   run_at: string;
   kind: string;
   payload: Record<string, unknown>;
+  plugin?: string | null;
+  reminder_key?: string | null;
+  reminder_group?: string | null;
+  cancel_reason?: CancelReason | null;
 }
 
 export interface EvaluationRow {
@@ -176,7 +213,7 @@ export interface EvaluationRow {
   simulated: boolean;
 }
 
-export type ActivityKind = "config_reload" | "config_error" | "plugin_connect" | "plugin_disconnect";
+export type ActivityKind = "config_reload" | "config_error" | "plugin_connect" | "plugin_disconnect" | "reminder_fired";
 
 export interface ActivityRow {
   id: number;
@@ -256,6 +293,7 @@ export class Db {
       const cols = this.sql.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
       if (!cols.some((c) => c.name === column)) this.sql.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
     }
+    for (const ddl of ADDED_INDEXES) this.sql.exec(ddl);
   }
 
   // Devices ---------------------------------------------------------------
@@ -633,12 +671,22 @@ export class Db {
 
   // Messages ----------------------------------------------------------------
 
-  addMessage(direction: "in" | "out", text: string, items: PlanItem[] | null = null, runId: number | null = null, now = new Date()): MessageRow {
+  addMessage(
+    direction: "in" | "out",
+    text: string,
+    items: PlanItem[] | null = null,
+    runId: number | null = null,
+    now = new Date(),
+    extra: { level?: ReminderLevel | null; due_at?: string | null; job_id?: number | null } = {},
+  ): MessageRow {
     const created_at = now.toISOString();
+    const level = extra.level ?? null;
+    const due_at = extra.due_at ?? null;
+    const job_id = extra.job_id ?? null;
     const info = this.sql
-      .prepare("INSERT INTO messages (direction, text, items, run_id, created_at) VALUES (?, ?, ?, ?, ?)")
-      .run(direction, text, items ? JSON.stringify(items) : null, runId, created_at);
-    return { id: Number(info.lastInsertRowid), direction, text, items, run_id: runId, created_at };
+      .prepare("INSERT INTO messages (direction, text, items, run_id, created_at, level, due_at, job_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(direction, text, items ? JSON.stringify(items) : null, runId, created_at, level, due_at, job_id);
+    return { id: Number(info.lastInsertRowid), direction, text, items, run_id: runId, created_at, level, due_at, job_id };
   }
 
   messagesAfter(afterId: number, limit = 100): MessageRow[] {
@@ -715,10 +763,108 @@ export class Db {
   }
 
   /** Cancels a pending job. Returns false if it already ran or was cancelled. */
-  cancelJob(id: number, now = new Date()): boolean {
+  cancelJob(id: number, now = new Date(), reason: CancelReason = "user"): boolean {
     return (
-      this.sql.prepare("UPDATE jobs SET cancelled_at = ? WHERE id = ? AND done_at IS NULL AND cancelled_at IS NULL").run(now.toISOString(), id)
-        .changes > 0
+      this.sql
+        .prepare("UPDATE jobs SET cancelled_at = ?, cancel_reason = ? WHERE id = ? AND done_at IS NULL AND cancelled_at IS NULL")
+        .run(now.toISOString(), reason, id).changes > 0
     );
+  }
+
+  // Plugin reminders ------------------------------------------------------------
+
+  /** The pending reminder for a plugin and key, if any. */
+  pendingReminder(plugin: string, key: string): Job | undefined {
+    const r = this.sql
+      .prepare("SELECT * FROM jobs WHERE kind = 'reminder' AND plugin = ? AND reminder_key = ? AND done_at IS NULL AND cancelled_at IS NULL")
+      .get(plugin, key) as (Omit<Job, "payload"> & { payload: string }) | undefined;
+    return r ? { ...r, payload: JSON.parse(r.payload) as Record<string, unknown> } : undefined;
+  }
+
+  pendingRemindersInGroup(plugin: string, group: string): Job[] {
+    const rows = this.sql
+      .prepare(
+        "SELECT * FROM jobs WHERE kind = 'reminder' AND plugin = ? AND reminder_group = ? AND done_at IS NULL AND cancelled_at IS NULL ORDER BY run_at",
+      )
+      .all(plugin, group) as (Omit<Job, "payload"> & { payload: string })[];
+    return rows.map((r) => ({ ...r, payload: JSON.parse(r.payload) as Record<string, unknown> }));
+  }
+
+  /** Cancels the pending reminder for a plugin and key. Returns false if there was none. */
+  cancelReminder(plugin: string, key: string, reason: CancelReason, now = new Date()): boolean {
+    return (
+      this.sql
+        .prepare(
+          "UPDATE jobs SET cancelled_at = ?, cancel_reason = ? WHERE kind = 'reminder' AND plugin = ? AND reminder_key = ? AND done_at IS NULL AND cancelled_at IS NULL",
+        )
+        .run(now.toISOString(), reason, plugin, key).changes > 0
+    );
+  }
+
+  /**
+   * Creates or updates the pending reminder for (plugin, key). It never re-arms a reminder that already
+   * fired or was cancelled by the user for the same `at`, and never undoes a snooze.
+   */
+  upsertReminder(
+    plugin: string,
+    key: string,
+    group: string | null,
+    at: Date,
+    payload: Omit<ReminderPayload, "snoozed_from">,
+  ): { status: UpsertStatus; job_id: number | null } {
+    return this.sql.transaction(() => {
+      const runAt = at.toISOString();
+      const pending = this.pendingReminder(plugin, key);
+      if (pending) {
+        const { snoozed_from, ...oldBody } = pending.payload as unknown as ReminderPayload;
+        const sameBody = JSON.stringify(oldBody) === JSON.stringify(payload);
+        if (snoozed_from === runAt) {
+          // The plugin re-sent the original time of a snoozed reminder: keep the snooze, refresh the content.
+          if (!sameBody || pending.reminder_group !== group) {
+            this.sql
+              .prepare("UPDATE jobs SET payload = ?, reminder_group = ? WHERE id = ?")
+              .run(JSON.stringify({ ...payload, snoozed_from }), group, pending.id);
+          }
+          return { status: "kept_snooze" as const, job_id: pending.id };
+        }
+        if (pending.run_at === runAt && sameBody && snoozed_from === undefined && pending.reminder_group === group) {
+          return { status: "unchanged" as const, job_id: pending.id };
+        }
+        this.sql
+          .prepare("UPDATE jobs SET run_at = ?, payload = ?, reminder_group = ? WHERE id = ?")
+          .run(runAt, JSON.stringify(payload), group, pending.id);
+        return { status: "scheduled" as const, job_id: pending.id };
+      }
+      const finished = this.sql
+        .prepare(
+          `SELECT id FROM jobs WHERE kind = 'reminder' AND plugin = ? AND reminder_key = ? AND run_at = ?
+             AND (done_at IS NOT NULL OR cancel_reason = 'user') LIMIT 1`,
+        )
+        .get(plugin, key, runAt) as { id: number } | undefined;
+      if (finished) return { status: "already_done" as const, job_id: null };
+      const info = this.sql
+        .prepare("INSERT INTO jobs (run_at, kind, payload, plugin, reminder_key, reminder_group) VALUES (?, 'reminder', ?, ?, ?, ?)")
+        .run(runAt, JSON.stringify(payload), plugin, key, group);
+      return { status: "scheduled" as const, job_id: Number(info.lastInsertRowid) };
+    })();
+  }
+
+  /**
+   * Re-queues a reminder (fired or not) `minutes` from now under the same plugin and key, replacing any
+   * pending row. The new row remembers the original time so the plugin's next sync keeps the snooze.
+   */
+  snoozeReminder(job: Job, minutes: number, now = new Date()): { job_id: number; at: string } {
+    const plugin = job.plugin as string;
+    const key = job.reminder_key as string;
+    const body = job.payload as unknown as ReminderPayload;
+    const at = new Date(now.getTime() + minutes * 60_000).toISOString();
+    return this.sql.transaction(() => {
+      this.cancelReminder(plugin, key, "replaced", now);
+      const payload: ReminderPayload = { ...body, snoozed_from: body.snoozed_from ?? job.run_at };
+      const info = this.sql
+        .prepare("INSERT INTO jobs (run_at, kind, payload, plugin, reminder_key, reminder_group) VALUES (?, 'reminder', ?, ?, ?, ?)")
+        .run(at, JSON.stringify(payload), plugin, key, job.reminder_group ?? null);
+      return { job_id: Number(info.lastInsertRowid), at };
+    })();
   }
 }

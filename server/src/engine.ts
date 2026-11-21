@@ -1,7 +1,7 @@
 import { Cron } from "croner";
 import { Agent, scheduleFollowups } from "./agent.js";
 import { isSchedule, type ConfigSource, type Workflow } from "./config.js";
-import type { Db, EventRow } from "./db.js";
+import type { Db, EventRow, ReminderPayload } from "./db.js";
 import type { PluginHost } from "./plugins.js";
 import { RESUME_JOB, WorkflowRunner, type RunOutcome } from "./runner.js";
 import { evaluateWorkflows, scheduleEventType, type Decision } from "./triggers.js";
@@ -176,6 +176,10 @@ export class Engine {
           const message = String(job.payload.message);
           const taskId = typeof job.payload.task_id === "number" ? job.payload.task_id : undefined;
           await this.agent.sendMessage(message, taskId ? [{ task_id: taskId, title: message, steps: [] }] : []);
+        } else if (job.kind === "reminder") {
+          const p = job.payload as unknown as ReminderPayload;
+          const msg = await this.agent.sendMessage(p.text, p.items ?? [], null, { level: p.level, due_at: job.run_at, job_id: job.id });
+          this.db.addActivity("reminder_fired", job.plugin ?? null, { key: job.reminder_key, level: p.level, message_id: msg.id }, this.now());
         } else if (job.kind === RESUME_JOB) {
           await this.runner.resume(Number(job.payload.workflow_run_id), String(job.payload.step_path));
         }

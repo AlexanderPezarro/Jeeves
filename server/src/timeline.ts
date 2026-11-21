@@ -2,7 +2,7 @@ import { Cron } from "croner";
 import { describeCondition } from "./conditions.js";
 import { isSchedule, ssidList, type ConfigSource, type Step, type Trigger, type Workflow } from "./config.js";
 import type { ConfigStore } from "./configstore.js";
-import type { Db, EventRow, StepRunRow, WorkflowRunRow } from "./db.js";
+import type { Db, EventRow, ReminderPayload, StepRunRow, WorkflowRunRow } from "./db.js";
 import type { PluginHost } from "./plugins.js";
 import { nextPath, RESUME_JOB, stepAt } from "./runner.js";
 import { localTime } from "./time.js";
@@ -71,7 +71,8 @@ export type UpcomingStatus = "will_run" | "will_skip" | "disabled" | "cap_reache
 export type UpcomingItem =
   | { kind: "schedule"; at: string; workflow_id: string; schedule: string; status: UpcomingStatus; reason: string | null }
   | { kind: "wait"; at: string; job_id: number; workflow_id: string; workflow_run_id: number; next_step: string | null; dry_run: boolean }
-  | { kind: "followup"; at: string; job_id: number; message: string; task_id: number | null };
+  | { kind: "followup"; at: string; job_id: number; message: string; task_id: number | null }
+  | { kind: "reminder"; at: string; job_id: number; plugin: string; key: string; level: string; text: string; task_id: number | null };
 
 export interface WaitingFor {
   workflow_id: string;
@@ -170,6 +171,21 @@ export function upcoming({ db, config }: TimelineDeps, hours = 48, now = new Dat
     });
   }
 
+  for (const job of db.pendingJobs("reminder")) {
+    if (new Date(job.run_at) > end) continue;
+    const p = job.payload as unknown as ReminderPayload;
+    items.push({
+      kind: "reminder",
+      at: job.run_at,
+      job_id: job.id,
+      plugin: job.plugin ?? "",
+      key: job.reminder_key ?? "",
+      level: p.level,
+      text: p.text,
+      task_id: p.items?.length === 1 && typeof p.items[0].task_id === "number" ? p.items[0].task_id : null,
+    });
+  }
+
   items.sort((a, b) => a.at.localeCompare(b.at));
 
   const waiting_for: WaitingFor[] = [];
@@ -237,10 +253,11 @@ export function activityFeed({ db }: TimelineDeps, q: ActivityQuery = {}): { ite
     for (const r of db.workflowRunsFeed({ ...base, statuses })) items.push(runDetail(db, r));
   }
   const activityKinds: string[] = [];
-  if (!kinds.length) activityKinds.push("config_reload", "config_error", "plugin_connect", "plugin_disconnect");
+  if (!kinds.length) activityKinds.push("config_reload", "config_error", "plugin_connect", "plugin_disconnect", "reminder_fired");
   for (const k of kinds) {
     if (k === "config") activityKinds.push("config_reload", "config_error");
     else if (k === "plugin") activityKinds.push("plugin_connect", "plugin_disconnect");
+    else if (k === "reminder") activityKinds.push("reminder_fired");
     else if (k !== "evaluation" && k !== "workflow_run") activityKinds.push(k);
   }
   if (activityKinds.length && !q.status) {

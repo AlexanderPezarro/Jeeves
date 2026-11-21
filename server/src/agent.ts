@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { ConfigSource, ResolvedConfig } from "./config.js";
-import type { Db, PlanItem } from "./db.js";
+import type { Db, PlanItem, ReminderLevel } from "./db.js";
 import type { Notifier } from "./notify.js";
 import { splitToolName, type PluginHost, type PluginTool } from "./plugins.js";
 import { localTime } from "./time.js";
@@ -357,8 +357,13 @@ export class Agent {
     await this.sendMessage(text, items, scope.runId);
   }
 
-  async sendMessage(text: string, items: PlanItem[], runId: number | null = null) {
-    const msg = this.deps.db.addMessage("out", text, items.length ? items : null, runId, this.now());
+  async sendMessage(
+    text: string,
+    items: PlanItem[],
+    runId: number | null = null,
+    extra: { level?: ReminderLevel | null; due_at?: string | null; job_id?: number | null } = {},
+  ) {
+    const msg = this.deps.db.addMessage("out", text, items.length ? items : null, runId, this.now(), extra);
     try {
       await this.deps.notifier.notify(msg);
     } catch (e) {
@@ -369,15 +374,18 @@ export class Agent {
   }
 }
 
-/** Turns the follow-ups a to-do plugin returns from start_task into scheduled jobs. */
+/**
+ * Turns the follow-ups a to-do plugin returns from start_task into scheduled jobs. Follow-ups the
+ * plugin already scheduled itself as reminders (`scheduled: true`) are skipped.
+ */
 export function scheduleFollowups(db: Db, startTaskResult: string): number {
-  let parsed: { task?: { id?: number }; followups?: { at: string; message: string }[] };
+  let parsed: { task?: { id?: number }; followups?: { at: string; message: string; scheduled?: boolean }[] };
   try {
     parsed = JSON.parse(startTaskResult);
   } catch {
     return 0;
   }
-  const followups = parsed.followups ?? [];
+  const followups = (parsed.followups ?? []).filter((f) => f.scheduled !== true);
   for (const f of followups) {
     db.addJob(new Date(f.at), "followup", { message: f.message, task_id: parsed.task?.id ?? null });
   }

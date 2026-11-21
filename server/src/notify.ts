@@ -13,8 +13,20 @@ export class PollOnlyNotifier implements Notifier {
 }
 
 /** The data every push carries, shared by FCM and Web Push so new fields are added in one place. */
-export function pushPayload(message: MessageRow): { message_id: number; text: string; items: NonNullable<MessageRow["items"]> } {
-  return { message_id: message.id, text: message.text, items: message.items ?? [] };
+export function pushPayload(message: MessageRow): {
+  message_id: number;
+  text: string;
+  items: NonNullable<MessageRow["items"]>;
+  level?: string;
+  due_at?: string;
+} {
+  return {
+    message_id: message.id,
+    text: message.text,
+    items: message.items ?? [],
+    ...(message.level ? { level: message.level } : {}),
+    ...(message.due_at ? { due_at: message.due_at } : {}),
+  };
 }
 
 /**
@@ -49,6 +61,8 @@ export class FcmNotifier implements Notifier {
         message_id: String(message.id),
         text: message.text,
         items: JSON.stringify(pushPayload(message).items),
+        ...(message.level ? { level: message.level } : {}),
+        ...(message.due_at ? { due_at: message.due_at } : {}),
       },
     });
     res.responses.forEach((r, i) => {
@@ -101,7 +115,12 @@ export class WebPushNotifier implements Notifier {
     const subs = this.db.webPushSubscriptions();
     if (subs.length === 0) return;
     let body = JSON.stringify(pushPayload(message));
-    if (Buffer.byteLength(body) > MAX_PLAINTEXT_BYTES) body = JSON.stringify({ message_id: message.id, truncated: true });
+    if (Buffer.byteLength(body) > MAX_PLAINTEXT_BYTES) body = JSON.stringify({
+        message_id: message.id,
+        truncated: true,
+        ...(message.level ? { level: message.level } : {}),
+        ...(message.due_at ? { due_at: message.due_at } : {}),
+      });
     const vapidDetails = { subject: this.vapid.subject, publicKey: this.vapid.publicKey, privateKey: this.vapid.privateKey };
     await Promise.all(
       subs.map(async (sub) => {
