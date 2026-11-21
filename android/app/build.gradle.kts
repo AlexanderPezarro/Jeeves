@@ -17,6 +17,18 @@ android {
         versionName = "0.1.0"
     }
 
+    signingConfigs {
+        // A committed debug keystore, so every CI build has the same signature and
+        // installs over the previous one. It uses Android's standard public debug
+        // passwords and protects nothing; never use it for a Play Store release.
+        getByName("debug") {
+            storeFile = rootProject.file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
