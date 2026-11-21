@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { api, onUnauthorized } from "./api";
+import { EMBEDDED } from "./env";
 import { ActivityPage } from "./pages/Activity";
 import { DashboardPage } from "./pages/Dashboard";
 import { PluginsPage } from "./pages/Plugins";
@@ -51,6 +52,21 @@ export function App() {
     );
 
   const section = "/" + (path.split("/")[1] ?? "");
+  if (EMBEDDED) {
+    // Inside the phone app: its own header and back button stand in for the top navigation.
+    return (
+      <>
+        {signedOut && (
+          <div className="notice warn banner" role="alert">
+            This editor session has expired. Go back and open it again; unsaved changes on this page will be lost.
+          </div>
+        )}
+        <main className="embedded">
+          <Suspense fallback={<div className="muted small">Loading…</div>}>{page}</Suspense>
+        </main>
+      </>
+    );
+  }
   return (
     <>
       <header className="topbar">

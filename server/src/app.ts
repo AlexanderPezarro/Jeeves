@@ -1,4 +1,4 @@
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, normalize, resolve } from "node:path";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
@@ -8,6 +8,7 @@ import { IDENTITY_HEADERS, peerMatcher, UiTokens, type ProxyAuthConfig } from ".
 import type { ConfigSource } from "./config.js";
 import type { ConfigStore } from "./configstore.js";
 import type { Db, Device } from "./db.js";
+import { acceptAppLink, APP_MOUNT, appCookieDevice, registerAppSession } from "./editor.js";
 import type { Engine } from "./engine.js";
 import { isManagedHost, registerPluginEvents, registerPluginRoutes, registerUiProxy, tokenAuthorizer } from "./pluginapi.js";
 import type { PluginHost } from "./plugins.js";
@@ -29,6 +30,8 @@ export interface AppDeps {
   /** Built web UI (web/dist), served at /admin/. */
   webDir?: string;
   uiTokens?: UiTokens;
+  /** Signs the embedded web UI's links and cookies (/app). Separate from `uiTokens` on purpose. */
+  appTokens?: UiTokens;
   /** VAPID public key (base64url) served to the app so it can register for Web Push. Unset: push is off. */
   vapidPublicKey?: string;
 }
@@ -50,8 +53,19 @@ const eventBody = z.object({
   payload: z.record(z.string(), z.unknown()).default({}),
 });
 
-export function buildApp({ db, engine, pairingCode, store, config = store, plugins, now, proxyAuth, webDir, uiTokens = new UiTokens(), vapidPublicKey }: AppDeps) {
+/**
+ * web/dist/index.html for a mount: a <base> so the build's relative asset URLs resolve from any
+ * route, and `window.__JEEVES__` telling the UI where it lives and whether it is in the app.
+ */
+function spaIndex(webDir: string, mount: string, embedded: boolean): string {
+  const html = readFileSync(join(webDir, "index.html"), "utf8");
+  const cfg = JSON.stringify({ base: `${mount}/`, embedded });
+  return html.replace(/<head>/i, `<head>\n    <base href="${mount}/" />\n    <script>window.__JEEVES__ = ${cfg};</script>`);
+}
+
+export function buildApp({ db, engine, pairingCode, store, config = store, plugins, now, proxyAuth, webDir, uiTokens = new UiTokens(), appTokens = new UiTokens(), vapidPublicKey }: AppDeps) {
   const app = Fastify({ logger: process.env.NODE_ENV !== "test" });
+  const clock = now ?? (() => new Date());
   const trustedPeer = peerMatcher(proxyAuth ?? { trust: false, trustedProxies: [] });
   const managed = isManagedHost(plugins) ? plugins : undefined;
 
@@ -176,8 +190,27 @@ export function buildApp({ db, engine, pairingCode, store, config = store, plugi
 
     authed.get("/runs", async () => ({ runs: db.recentRuns() }));
 
+    registerAppSession(authed, { tokens: appTokens, now: clock });
+
     shared(authed, "/plugins");
   });
+
+  // The web UI embedded in the app's WebView: same routes as the device scope, authenticated by the
+  // /app cookie that a POST /app/session link sets. Plugin pages open under the app's /plugins mount.
+  app.register(
+    async (embedded) => {
+      embedded.addHook("onRequest", async (req, reply) => {
+        const device = appCookieDevice(req, db, appTokens, clock);
+        if (!device) return reply.code(401).send({ error: "unauthorized", message: "reopen the editor from the app" });
+        req.device = device;
+        req.identity = { kind: "device", name: device.name };
+      });
+      embedded.get("/me", async (req) => ({ identity: req.identity }));
+      shared(embedded, "/plugins");
+      if (managed) registerUiProxy(embedded, { plugins: managed, mount: `${APP_MOUNT}/api/plugins` });
+    },
+    { prefix: `${APP_MOUNT}/api` },
+  );
 
   if (managed && store) {
     // The app's WebView: authenticated by a short-lived ?t= token, then a path-scoped cookie.
@@ -202,19 +235,28 @@ export function buildApp({ db, engine, pairingCode, store, config = store, plugi
   );
 
   if (webDir && existsSync(join(webDir, "index.html"))) {
-    // Static files need no auth of their own: Authelia gates /admin in Caddy. SPA fallback to index.html.
+    // Static files need no auth of their own: Authelia gates /admin in Caddy, and /app's API needs
+    // the app cookie. The build uses relative asset URLs; index.html gets a <base> for its mount.
     app.register(fastifyStatic, { root: resolve(webDir), serve: false });
     app.get("/", async (_req, reply) => reply.redirect("/admin/"));
-    app.get("/admin", async (_req, reply) => reply.redirect("/admin/"));
-    app.get("/admin/*", async (req, reply) => {
-      const rel = normalize((req.params as { "*": string })["*"] || "index.html");
-      if (rel.startsWith("..") || rel.startsWith("api/") || rel === "api") return reply.code(404).send({ error: "not_found" });
-      const file = join(webDir, rel);
-      const isFile = existsSync(file) && statSync(file).isFile();
-      if (!isFile) reply.header("cache-control", "no-cache");
-      else if (rel.startsWith("assets/")) reply.header("cache-control", "public, max-age=31536000, immutable");
-      return reply.sendFile(isFile ? rel : "index.html", { cacheControl: false });
-    });
+    const spa = (mount: string, embedded: boolean) => {
+      app.get(mount, async (_req, reply) => reply.redirect(`${mount}/`));
+      app.get(`${mount}/*`, async (req, reply) => {
+        if (embedded && acceptAppLink(req, reply, db, appTokens, clock)) return reply;
+        const rel = normalize((req.params as { "*": string })["*"] || "index.html");
+        if (rel.startsWith("..") || rel.startsWith("api/") || rel === "api") return reply.code(404).send({ error: "not_found" });
+        const file = join(webDir, rel);
+        const isFile = rel !== "index.html" && existsSync(file) && statSync(file).isFile();
+        if (isFile) {
+          if (rel.startsWith("assets/")) reply.header("cache-control", "public, max-age=31536000, immutable");
+          return reply.sendFile(rel, { cacheControl: false });
+        }
+        reply.header("cache-control", "no-cache").type("text/html; charset=utf-8");
+        return spaIndex(webDir, mount, embedded);
+      });
+    };
+    spa("/admin", false);
+    spa(APP_MOUNT, true);
   }
 
   return app;

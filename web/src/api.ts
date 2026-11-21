@@ -15,9 +15,13 @@ import type {
   WorkflowRun,
   WorkflowSummary,
 } from "./types";
+import { BASE_PATH } from "./env";
 
-/** Same-origin API. Caddy + Authelia add Remote-User; the browser sends no tokens. */
-export const API_BASE = `${import.meta.env.BASE_URL}api`;
+/**
+ * Same-origin API. In the browser, Caddy + Authelia add Remote-User; in the phone app, the /app
+ * cookie authenticates. The page itself sends no tokens either way.
+ */
+export const API_BASE = `${BASE_PATH}api`;
 
 export class ApiError extends Error {
   constructor(

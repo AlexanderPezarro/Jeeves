@@ -107,7 +107,7 @@ export function registerPluginRoutes(app: FastifyInstance, { store, plugins, tok
   });
 }
 
-function cookies(req: FastifyRequest): Record<string, string> {
+export function cookies(req: FastifyRequest): Record<string, string> {
   const out: Record<string, string> = {};
   for (const part of (req.headers.cookie ?? "").split(";")) {
     const i = part.indexOf("=");

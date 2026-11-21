@@ -114,7 +114,7 @@ export function WorkflowsPage() {
       {!list.data && !list.error && <Spinner />}
       {list.data && list.data.workflows.length === 0 && <p className="muted">No workflows yet.</p>}
       <div className="card flush">
-        <table className="table">
+        <table className="table workflows-table">
           <thead>
             <tr>
               <th>On</th>
