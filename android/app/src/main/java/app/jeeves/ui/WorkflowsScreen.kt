@@ -16,12 +16,14 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -34,7 +36,15 @@ import app.jeeves.ApiException
 import app.jeeves.Prefs
 import app.jeeves.WorkflowRun
 import app.jeeves.WorkflowSummary
+import app.jeeves.editor.SLUG
+import app.jeeves.ui.editor.WorkflowEditorScreen
 import kotlinx.coroutines.launch
+
+/** Which editor is open. [Web.returnTo] is the workflow to reopen in the native editor when the web one closes. */
+private sealed interface Editing {
+    data class Native(val id: String, val isNew: Boolean, val generation: Int = 0) : Editing
+    data class Web(val path: String, val title: String, val returnTo: String?, val generation: Int) : Editing
+}
 
 @Composable
 fun WorkflowsScreen(prefs: Prefs, modifier: Modifier = Modifier, onBack: () -> Unit) {
@@ -47,8 +57,9 @@ fun WorkflowsScreen(prefs: Prefs, modifier: Modifier = Modifier, onBack: () -> U
     var runTarget by remember { mutableStateOf<WorkflowSummary?>(null) }
     // A run to show full-screen: its id plus, for dry runs, the finished result.
     var shownRun by remember { mutableStateOf<Pair<Long, WorkflowRun?>?>(null) }
-    // The embedded editor, open at (path, title).
-    var editing by remember { mutableStateOf<Pair<String, String>?>(null) }
+    // The editor that is open, if any: the native one, or the web editor in a WebView.
+    var editing by remember { mutableStateOf<Editing?>(null) }
+    var newDialog by remember { mutableStateOf(false) }
 
     suspend fun load() {
         workflows = api.workflows()
@@ -97,13 +108,32 @@ fun WorkflowsScreen(prefs: Prefs, modifier: Modifier = Modifier, onBack: () -> U
 
     LaunchedEffect(Unit) { refresh() }
 
-    val edit = editing
-    if (edit != null) {
-        EditorScreen(api, edit.first, edit.second, modifier = modifier, onBack = {
-            editing = null
-            refresh()
-        })
-        return
+    when (val edit = editing) {
+        is Editing.Native -> {
+            // Keyed on the id so coming back from the web editor reloads the file.
+            key(edit.id, edit.generation) {
+                WorkflowEditorScreen(
+                    api, prefs, edit.id, edit.isNew, modifier = modifier,
+                    onBack = {
+                        editing = null
+                        refresh()
+                    },
+                    onOpenWeb = { path -> editing = Editing.Web(path, edit.id, edit.id, edit.generation) },
+                )
+            }
+            return
+        }
+        is Editing.Web -> {
+            EditorScreen(api, edit.path, edit.title, modifier = modifier, onBack = {
+                // Opened from the native editor: go back to it, freshly loaded. Otherwise back to the list.
+                val back = edit.returnTo
+                if (back != null) editing = Editing.Native(back, false, edit.generation + 1)
+                else editing = null
+                refresh()
+            })
+            return
+        }
+        null -> Unit
     }
 
     val shown = shownRun
@@ -117,7 +147,7 @@ fun WorkflowsScreen(prefs: Prefs, modifier: Modifier = Modifier, onBack: () -> U
     Column(modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         ScreenHeader("Workflows", Modifier.padding(top = 16.dp), onBack = onBack, onRefresh = { refresh() })
         status?.let { Text(it, modifier = Modifier.padding(vertical = 4.dp), style = MaterialTheme.typography.bodyMedium) }
-        Button(onClick = { editing = "workflows" to "New workflow" }, modifier = Modifier.padding(vertical = 4.dp)) {
+        Button(onClick = { newDialog = true }, modifier = Modifier.padding(vertical = 4.dp)) {
             Text("New workflow")
         }
         when {
@@ -133,11 +163,50 @@ fun WorkflowsScreen(prefs: Prefs, modifier: Modifier = Modifier, onBack: () -> U
                         onToggle = { toggle(wf, it) },
                         onRun = { runTarget = wf },
                         onOpenLastRun = { id -> shownRun = id to null },
-                        onEdit = { editing = "workflows/${wf.id}" to wf.id },
+                        onEdit = {
+                            // A file that doesn't load can only be fixed in the web editor (it has a YAML tab).
+                            editing = if (!wf.loaded || wf.error != null) Editing.Web("workflows/${wf.id}", wf.id, null, 0)
+                            else Editing.Native(wf.id, false)
+                        },
+                        onEditWeb = { editing = Editing.Web("workflows/${wf.id}", wf.id, null, 0) },
                     )
                 }
             }
         }
+    }
+
+    if (newDialog) {
+        var id by remember { mutableStateOf("") }
+        val taken = workflows.any { it.id == id }
+        val valid = SLUG.matches(id)
+        AlertDialog(
+            onDismissRequest = { newDialog = false },
+            title = { Text("New workflow") },
+            text = {
+                OutlinedTextField(
+                    id, { id = it.trim() },
+                    label = { Text("Workflow id") },
+                    isError = id.isNotEmpty() && (!valid || taken),
+                    supportingText = {
+                        Text(
+                            when {
+                                id.isNotEmpty() && !valid -> "Lowercase letters, digits and dashes"
+                                taken -> "A workflow with this id already exists"
+                                else -> "For example morning-plan"
+                            },
+                        )
+                    },
+                    singleLine = true,
+                )
+            },
+            confirmButton = {
+                TextButton(enabled = valid && !taken, onClick = {
+                    newDialog = false
+                    editing = Editing.Native(id, true)
+                }) { Text("Create") }
+            },
+            dismissButton = { TextButton(onClick = { newDialog = false }) { Text("Cancel") } },
+        )
     }
 
     runTarget?.let { wf ->
@@ -177,6 +246,7 @@ private fun WorkflowCard(
     onRun: () -> Unit,
     onOpenLastRun: (Long) -> Unit,
     onEdit: () -> Unit,
+    onEditWeb: () -> Unit,
 ) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -205,6 +275,7 @@ private fun WorkflowCard(
                     Text(if (busy) "Working…" else "Run now")
                 }
                 TextButton(onClick = onEdit) { Text("Edit") }
+                if (wf.loaded && wf.error == null) TextButton(onClick = onEditWeb) { Text("Web editor") }
             }
         }
     }
