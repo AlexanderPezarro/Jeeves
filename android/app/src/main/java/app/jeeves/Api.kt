@@ -6,6 +6,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -48,6 +49,7 @@ data class ChatMessage(
     val created_at: String,
 )
 
+@Serializable private data class VapidKeyResponse(val public_key: String)
 @Serializable private data class PairResponse(val device_id: Long, val token: String)
 @Serializable private data class TodayResponse(val tasks: List<Task>)
 @Serializable private data class MessagesResponse(val messages: List<ChatMessage>)
@@ -355,6 +357,26 @@ class Api(private val prefs: Prefs) {
 
     suspend fun messages(after: Long): List<ChatMessage> =
         json.decodeFromString<MessagesResponse>(call("GET", "/messages?after=$after")).messages
+
+    /** Registers (or, with a null endpoint, clears) this phone's Web Push subscription. */
+    suspend fun registerPush(endpoint: String?, p256dh: String? = null, auth: String? = null) {
+        call("PUT", "/devices/me/push", buildJsonObject {
+            if (endpoint == null) {
+                put("endpoint", JsonNull)
+            } else {
+                put("endpoint", endpoint)
+                put("p256dh", p256dh)
+                put("auth", auth)
+            }
+        })
+    }
+
+    /** The server's VAPID public key, or null when the server has push turned off (404). */
+    suspend fun vapidKey(): String? = try {
+        json.decodeFromString<VapidKeyResponse>(call("GET", "/push/vapid-key")).public_key
+    } catch (e: ApiException) {
+        if (e.code == 404) null else throw e
+    }
 
     suspend fun sendMessage(text: String) {
         call("POST", "/messages", buildJsonObject { put("text", text) })

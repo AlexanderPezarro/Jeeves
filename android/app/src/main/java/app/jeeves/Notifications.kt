@@ -30,6 +30,8 @@ object Notifications {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             return
         }
+        // Push and the poll can both deliver a message; only the first shows it.
+        if (!Prefs(context).markShown(message.id)) return
         val notificationId = message.id.toInt()
         val open = PendingIntent.getActivity(
             context, notificationId,

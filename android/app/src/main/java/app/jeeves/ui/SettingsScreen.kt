@@ -25,6 +25,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
@@ -40,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import app.jeeves.Api
 import app.jeeves.Prefs
+import app.jeeves.Push
 import app.jeeves.WifiTrigger
 import kotlinx.coroutines.launch
 
@@ -150,6 +152,31 @@ fun SettingsScreen(
                 if (current != null) add(current)
                 else status = "Couldn't read the Wi-Fi name. Allow location access below, and make sure you're on Wi-Fi."
             }) { Text("Add the current Wi-Fi") }
+        }
+
+        if (prefs.isPaired) {
+            HorizontalDivider()
+            Text("Push", style = MaterialTheme.typography.titleMedium)
+            var push by remember { mutableStateOf(Push.Status.REGISTERING) }
+            val refresh: () -> Unit = {
+                scope.launch { push = Push.register(context) }
+            }
+            LaunchedEffect(Unit) { refresh() }
+            val (title, subtitle) = when (push) {
+                Push.Status.ON -> "On (ntfy)" to "Tap to register again"
+                Push.Status.NO_DISTRIBUTOR -> "No distributor: install ntfy" to "Tap to open the ntfy listing"
+                Push.Status.SERVER_OFF -> "Server has push off" to "Messages arrive by polling every 15 minutes"
+                Push.Status.REGISTERING -> "Registering…" to "Waiting for the distributor"
+                Push.Status.ERROR -> "Couldn't register" to "Tap to try again"
+            }
+            NavRow(title, subtitle) {
+                if (push == Push.Status.NO_DISTRIBUTOR) {
+                    Push.openNtfyListing(context)
+                } else {
+                    push = Push.Status.REGISTERING
+                    refresh()
+                }
+            }
         }
 
         HorizontalDivider()
