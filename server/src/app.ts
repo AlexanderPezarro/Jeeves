@@ -170,6 +170,7 @@ export function buildApp({ db, engine, pairingCode, store, config = store, plugi
   if (webDir && existsSync(join(webDir, "index.html"))) {
     // Static files need no auth of their own: Authelia gates /admin in Caddy. SPA fallback to index.html.
     app.register(fastifyStatic, { root: resolve(webDir), serve: false });
+    app.get("/", async (_req, reply) => reply.redirect("/admin/"));
     app.get("/admin", async (_req, reply) => reply.redirect("/admin/"));
     app.get("/admin/*", async (req, reply) => {
       const rel = normalize((req.params as { "*": string })["*"] || "index.html");
