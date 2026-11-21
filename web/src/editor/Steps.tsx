@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { isObjectSchema, JsonTextarea, SchemaForm } from "../SchemaForm";
-import { STEP_TYPES, stepType, type CondExpr, type Path, type Step, type StepType } from "../types";
+import { STEP_TYPES, stepType, type CondExpr, type Effort, type Path, type Step, type StepType } from "../types";
 import { Field, FieldIssues } from "../ui";
 import { CondExprEditor } from "./Conditions";
 import { BUILTIN_CLAUDE_TOOLS, uniqueId, useEditorData } from "./context";
@@ -13,6 +13,9 @@ const TYPE_LABEL: Record<StepType, string> = {
   if: "If / else",
   stop: "Stop",
 };
+
+/** Suggested model ids for a step's override (any claude-* id is accepted). */
+const CLAUDE_MODELS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-2"];
 
 /** How to insert values, plus the fields this workflow's events and steps provide (from their schemas). */
 function TemplateHint() {
@@ -252,11 +255,42 @@ function ClaudeStep({ step, onChange, path }: { step: Extract<Step, { claude: un
     const { tools: _t, ...rest } = c;
     onChange({ ...step, claude: list === undefined ? rest : { ...rest, tools: list } });
   };
+  /** Sets an optional field, dropping it when cleared so the file stays minimal. */
+  const setOpt = <K extends "model" | "effort" | "history">(key: K, value: (typeof c)[K] | undefined) => {
+    const next = { ...c } as Record<string, unknown>;
+    if (value === undefined || value === "" || value === false) delete next[key];
+    else next[key] = value;
+    onChange({ ...step, claude: next as typeof c });
+  };
   return (
     <div className="stack-sm">
       <Field label="Prompt" path={[...p, "prompt"]} hint={TEMPLATE_HINT}>
         <textarea aria-label="Claude prompt" rows={4} value={c.prompt ?? ""} onChange={(e) => onChange({ ...step, claude: { ...c, prompt: e.target.value } })} />
       </Field>
+      <div className="grid2">
+        <Field label="Model" path={[...p, "model"]} hint="Blank uses the global model from Settings.">
+          <input aria-label="Claude model" className="mono" list="jeeves-claude-models" placeholder="global model" value={c.model ?? ""} onChange={(e) => setOpt("model", e.target.value.trim() || undefined)} />
+          <datalist id="jeeves-claude-models">
+            {CLAUDE_MODELS.map((m) => (
+              <option key={m} value={m} />
+            ))}
+          </datalist>
+        </Field>
+        <Field label="Effort" path={[...p, "effort"]} hint="Higher thinks harder and costs more.">
+          <select aria-label="Claude effort" value={c.effort ?? ""} onChange={(e) => setOpt("effort", (e.target.value || undefined) as Effort | undefined)}>
+            <option value="">Global setting</option>
+            {(["low", "medium", "high", "xhigh", "max"] as const).map((x) => (
+              <option key={x} value={x}>
+                {x}
+              </option>
+            ))}
+          </select>
+        </Field>
+      </div>
+      <label className="check">
+        <input type="checkbox" checked={c.history ?? false} onChange={(e) => setOpt("history", e.target.checked)} />
+        Include the recent chat (last 8 messages)
+      </label>
       <div className="field">
         <span className="field-label">Tools Claude may use</span>
         <label className="check">

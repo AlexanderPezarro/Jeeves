@@ -32,6 +32,14 @@ export const MANUAL_PLAN: WorkflowInput = {
   steps: [{ id: "plan", claude: { prompt: "Plan now." } }],
 };
 
+/** The default chat workflow: a chat message becomes message.received, answered by Claude with the recent chat. */
+export const CHAT_REPLY: WorkflowInput = {
+  id: "chat-reply",
+  cooldown: 0,
+  triggers: [{ event: "message.received" }],
+  steps: [{ id: "reply", claude: { prompt: 'I wrote: "{{event.text}}". Reply once.', history: true } }],
+};
+
 const READ_ONLY = new Set(["list_due_tasks", "get_chore"]);
 
 /** A to-do plugin stand-in with two tasks; laundry has a timed follow-up. */
@@ -50,6 +58,9 @@ export class FakeTodo implements PluginHost {
       output_schema: null,
       plugin_title: "Chores",
     }));
+  }
+  instructions() {
+    return [{ plugin: "todo", title: "Chores", text: "Plan easiest first." }];
   }
   itemActions(plugin: string) {
     return plugin === "todo" ? [{ id: "done", label: "Done", style: "primary" as const }, { id: "skip", label: "Skip" }] : [];
@@ -131,7 +142,7 @@ export function setup(opts: SetupOptions = {}) {
   const clock = opts.clock ?? { now: new Date("2026-11-14T12:00:00Z") };
   const now = () => clock.now;
   const db = opts.db ?? new Db();
-  const workflows = opts.workflows ?? [ARRIVE_HOME, MANUAL_PLAN];
+  const workflows = opts.workflows ?? [ARRIVE_HOME, MANUAL_PLAN, CHAT_REPLY];
   let config: ConfigSource;
   let store: ConfigStore | undefined;
   if (opts.store) {

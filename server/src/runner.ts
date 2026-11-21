@@ -221,7 +221,8 @@ export class WorkflowRunner {
 
     if ("claude" in step) {
       const prompt = render(step.claude.prompt, s.tctx, s.warnings);
-      const input = { prompt, ...(step.claude.tools ? { tools: step.claude.tools } : {}) };
+      const { tools, model, effort, history } = step.claude;
+      const input = { prompt, ...(tools ? { tools } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...(history ? { history } : {}) };
       db.finishStep(s.stepRunId, { status: "running", input }, this.now());
       const r = await agent.run({
         kind: "plan",
@@ -229,7 +230,10 @@ export class WorkflowRunner {
         rule_id: s.workflow.id,
         event_id: s.eventId ?? undefined,
         workflow_run_id: s.runId,
-        tools: step.claude.tools,
+        tools,
+        model,
+        effort,
+        history,
         dryRun: s.dryRun,
       });
       const output = { status: r.status, run_id: r.runId, messages_sent: r.messagesSent, ...(r.recorded ? { recorded: r.recorded } : {}) };

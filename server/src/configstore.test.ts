@@ -1,9 +1,9 @@
-import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ConfigStore, ConfigWriteError, sha256 } from "./configstore.js";
-import { migrateRules } from "./migrate.js";
+import { migrateRules, seedChatWorkflow } from "./migrate.js";
 import { pair, setup, tmpConfigDir } from "./testkit.js";
 import { Agent } from "./agent.js";
 import { Db } from "./db.js";
@@ -48,7 +48,7 @@ describe("ConfigStore", () => {
     cpSync(new URL("../../config.example", import.meta.url), dir, { recursive: true });
     const store = open(dir);
     expect(store.errors).toEqual([]);
-    expect(store.current.workflows.map((w) => w.id)).toEqual(["arrive-home", "manual-plan", "weekend-morning"]);
+    expect(store.current.workflows.map((w) => w.id)).toEqual(["arrive-home", "chat-reply", "manual-plan", "weekend-morning"]);
   });
 
   it("toggles enabled without losing comments or key order", () => {
@@ -171,7 +171,7 @@ describe("ConfigStore", () => {
     const s = setup({ store: true });
     const headers = await pair(s.app);
     const list = await s.app.inject({ method: "GET", url: "/workflows", headers });
-    expect(list.json().workflows.map((w: { id: string }) => w.id)).toEqual(["arrive-home", "manual-plan"]);
+    expect(list.json().workflows.map((w: { id: string }) => w.id)).toEqual(["arrive-home", "chat-reply", "manual-plan"]);
 
     const one = (await s.app.inject({ method: "GET", url: "/workflows/manual-plan", headers })).json();
     expect(one.parsed.id).toBe("manual-plan");
@@ -188,7 +188,7 @@ describe("ConfigStore", () => {
 
     const del = await s.app.inject({ method: "DELETE", url: `/workflows/manual-plan?hash=${toggled.json().hash}`, headers });
     expect(del.statusCode).toBe(200);
-    expect(s.store!.current.workflows.map((w) => w.id)).toEqual(["arrive-home"]);
+    expect(s.store!.current.workflows.map((w) => w.id)).toEqual(["arrive-home", "chat-reply"]);
     expect((await s.app.inject({ method: "GET", url: "/config/errors", headers })).json()).toEqual({ errors: [] });
     s.store!.close();
   });
@@ -295,5 +295,28 @@ describe("rules migration", () => {
 
     const again = await app.inject({ method: "POST", url: "/events", headers, payload: { type: "wifi.connected", payload: { ssid: "home", away_minutes: 300 } } });
     expect(again.json().rules[0]).toMatchObject({ fired: false, reason: "already fired today" });
+  });
+});
+
+describe("seedChatWorkflow", () => {
+  it("writes chat-reply.yaml once, unless a workflow already listens for message.received", () => {
+    const dir = tmpConfigDir();
+    const db = new Db();
+    expect(seedChatWorkflow(dir, [], db)).toBe(true);
+    const yaml = readFileSync(join(dir, "workflows", "chat-reply.yaml"), "utf8");
+    expect(yaml).toContain("event: message.received");
+    // It must be a valid workflow as written.
+    const store = new ConfigStore(dir);
+    expect(store.errors).toEqual([]);
+    expect(store.current.workflows.map((w) => w.id)).toContain("chat-reply");
+    store.close();
+    // Deleted by the user later: not brought back.
+    rmSync(join(dir, "workflows", "chat-reply.yaml"));
+    expect(seedChatWorkflow(dir, [], db)).toBe(false);
+    expect(existsSync(join(dir, "workflows", "chat-reply.yaml"))).toBe(false);
+
+    const other = tmpConfigDir();
+    expect(seedChatWorkflow(other, [{ triggers: [{ event: "message.received" }] }], new Db())).toBe(false);
+    expect(existsSync(join(other, "workflows", "chat-reply.yaml"))).toBe(false);
   });
 });

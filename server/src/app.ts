@@ -156,7 +156,7 @@ export function buildApp({ db, engine, pairingCode, store, config = store, plugi
     authed.post("/messages", async (req, reply) => {
       const body = z.object({ text: z.string().min(1).max(2000) }).safeParse(req.body);
       if (!body.success) return reply.code(400).send({ error: "text is required" });
-      return engine.handleUserMessage(body.data.text);
+      return engine.handleUserMessage(body.data.text, req.device!.id);
     });
 
     /** Re-queues a fired reminder `minutes` from now under the same plugin and key. */

@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { ConfigSource, ResolvedConfig } from "./config.js";
+import type { ConfigSource, Effort, ResolvedConfig } from "./config.js";
 import type { Db, PlanItem, ReminderLevel } from "./db.js";
 import type { Notifier } from "./notify.js";
 import { splitToolName, type PluginHost, type PluginTool } from "./plugins.js";
@@ -29,9 +29,15 @@ export interface AgentDeps {
 }
 
 export interface RunRequest {
-  /** "plan": a trigger fired. "reply": the user wrote to Jeeves. */
+  /** Recorded with the run: "plan" for workflow steps; "reply" is kept for older runs. */
   kind: "plan" | "reply";
   prompt: string;
+  /** Overrides the global model for this run. */
+  model?: string;
+  /** Overrides the global effort for this run. */
+  effort?: Effort;
+  /** Include the recent chat (last 8 messages) in the prompt. */
+  history?: boolean;
   rule_id?: string;
   event_id?: number;
   workflow_run_id?: number;
@@ -63,7 +69,7 @@ export const BUILTIN_TOOLS: Anthropic.Beta.Messages.BetaTool[] = [
   {
     name: "send_message",
     description:
-      "Send a message to Alexander's phone. Use items for a to-do list: one item per task, easiest first, " +
+      "Send a message to the user's phone. Use items for a to-do list: one item per task, easiest first, " +
       "each with 2-4 short concrete steps. Use an empty items list for a plain reply. When an item is one of a " +
       "plugin's items (e.g. a to-do task), set plugin and item_id (the task id, as a string) so the phone shows " +
       "that plugin's buttons on it.",
@@ -95,7 +101,7 @@ export const BUILTIN_TOOLS: Anthropic.Beta.Messages.BetaTool[] = [
   {
     name: "schedule_followup",
     description:
-      "Schedule a nudge to Alexander's phone after a number of minutes, e.g. to check on a task. Set plugin and " +
+      "Schedule a nudge to the user's phone after a number of minutes, e.g. to check on a task. Set plugin and " +
       "item_id when it is about a plugin's item: the nudge gets that plugin's buttons, and is dropped if the item is finished first.",
     strict: true,
     input_schema: {
@@ -112,30 +118,32 @@ export const BUILTIN_TOOLS: Anthropic.Beta.Messages.BetaTool[] = [
   },
 ];
 
-function systemPrompt(config: ResolvedConfig, kind: RunRequest["kind"]): string {
+/** Guidance a plugin gives Claude about its tools (manifest `instructions`). */
+export interface PluginInstructions {
+  plugin: string;
+  title: string;
+  text: string;
+}
+
+/**
+ * The system prompt: who Jeeves is and how it reaches the user, nothing domain-specific. What to do
+ * comes from the workflow step's prompt; how to use a plugin's tools comes from that plugin.
+ */
+export function systemPrompt(config: ResolvedConfig, plugins: PluginInstructions[] = []): string {
   const common = [
-    "You are Jeeves, Alexander's household assistant. You help him get through chores and goals",
-    "with as little friction as possible. You talk to him through notifications on his phone, so",
-    "keep messages short, warm and practical. British English.",
+    "You are Jeeves, a personal assistant that runs on the user's home server. You reach the user only",
+    "through the send_message tool, which becomes a notification on their phone, so keep messages short,",
+    "warm and practical. British English.",
     "",
-    "Tools named `<plugin>__<tool>` belong to plugins; the `todo` plugin owns his chores and tasks.",
-    "Only change task state (start, complete, skip, snooze) when he has said so or the trigger implies it.",
+    "Tools named `<plugin>__<tool>` belong to plugins. Only change things through them (for example, mark",
+    "a task done) when the user has said so or the request clearly implies it.",
+    "When a message item is one of a plugin's items, set its plugin and item_id so the user gets that",
+    "plugin's buttons on it.",
+    "If you finish without calling send_message, your final text is sent to the user instead.",
   ];
-  const plan = [
-    "",
-    "When a trigger fires: look at the due tasks, then call send_message exactly once with a to-do list.",
-    "Order it easiest first so he builds momentum. Leave out anything that does not fit the time he has.",
-    "Give each item 2-4 concrete steps taken from the chore's how-to notes. Mention overdue tasks gently.",
-    "If nothing is due, send a short message saying so instead of inventing work.",
-  ];
-  const reply = [
-    "",
-    "When he writes to you: work out what he means (for example 'done with dishes, laundry is in'),",
-    "update the matching tasks with the plugin tools, then call send_message once with a short reply.",
-    "Starting a timed chore schedules its follow-ups automatically; do not schedule them again.",
-  ];
-  const about = config.about_me ? ["", "About Alexander:", config.about_me] : [];
-  return [...common, ...(kind === "plan" ? plan : reply), ...about].join("\n");
+  const fromPlugins = plugins.flatMap((p) => ["", `## ${p.title} (plugin \`${p.plugin}\`)`, p.text.trim()]);
+  const about = config.about_me ? ["", "## About the user", config.about_me.trim()] : [];
+  return [...common, ...fromPlugins, ...about].join("\n");
 }
 
 /** Per-run state: which tools are allowed and, in a dry run, what would have been sent. */
@@ -188,15 +196,19 @@ export class Agent {
     }
 
     const tools = this.toolsFor(await plugins.listTools(), req);
+    const model = req.model ?? config.model;
+    const effort = req.effort ?? config.effort;
+    // Only the plugins whose tools this run can use get to add their instructions.
+    const offered = new Set(tools.map((t) => t.name.split("__")[0]));
+    const system = systemPrompt(config, (plugins.instructions?.() ?? []).filter((p) => offered.has(p.plugin)));
 
     const context = `It is ${local.weekday} ${local.date}, ${local.time} (${config.timezone}).`;
-    const history =
-      req.kind === "reply"
-        ? db
-            .recentMessages(8)
-            .map((m) => `${m.direction === "in" ? "Alexander" : "Jeeves"}: ${m.text}`)
-            .join("\n")
-        : "";
+    const history = req.history
+      ? db
+          .recentMessages(8)
+          .map((m) => `${m.direction === "in" ? "User" : "Jeeves"}: ${m.text}`)
+          .join("\n")
+      : "";
     const userText = [context, history && `Recent conversation:\n${history}`, req.prompt].filter(Boolean).join("\n\n");
 
     const runId = db.startRun({
@@ -204,14 +216,14 @@ export class Agent {
       rule_id: req.rule_id,
       event_id: req.event_id,
       workflow_run_id: req.workflow_run_id,
-      model: config.model,
+      model,
       input: userText,
       local_date: local.date,
     });
     const scope: RunScope = { runId, dryRun: !!req.dryRun, allowed: new Set(tools.map((t) => t.name)), recorded: [] };
     const withRecorded = (r: RunResult): RunResult => (scope.dryRun ? { ...r, recorded: scope.recorded } : r);
 
-    if (this.deps.cli) return withRecorded(await this.runCli(req, scope, userText, tools));
+    if (this.deps.cli) return withRecorded(await this.runCli({ model, effort, system }, scope, userText, tools));
     if (!create) throw new Error("Agent has neither an API client nor a CLI runner");
 
     const messages: Anthropic.Beta.Messages.BetaMessageParam[] = [{ role: "user", content: userText }];
@@ -222,12 +234,12 @@ export class Agent {
     try {
       for (let turn = 0; turn < MAX_TURNS; turn++) {
         const res = await create({
-          model: config.model,
+          model,
           max_tokens: 16000,
           betas: ["server-side-fallback-2026-07-01"],
           fallbacks: "default",
-          output_config: { effort: config.effort },
-          system: systemPrompt(config, req.kind),
+          output_config: { effort },
+          system,
           tools,
           messages,
         });
@@ -252,7 +264,7 @@ export class Agent {
         messages.push({ role: "user", content: results });
       }
 
-      // A plan run that ended without messaging the phone still owes Alexander something.
+      // A run that ended without messaging the phone still owes the user something.
       if (sent === 0) {
         const last = messages.at(-1);
         const text =
@@ -283,17 +295,21 @@ export class Agent {
     }
   }
 
-  private async runCli(req: RunRequest, scope: RunScope, userText: string, tools: Anthropic.Beta.Messages.BetaTool[]): Promise<RunResult> {
+  private async runCli(
+    run: { model: string; effort: Effort; system: string },
+    scope: RunScope,
+    userText: string,
+    tools: Anthropic.Beta.Messages.BetaTool[],
+  ): Promise<RunResult> {
     const { db } = this.deps;
-    const config = this.config;
     const runId = scope.runId;
     let sent = 0;
     let out;
     try {
       out = await this.deps.cli!({
-        model: config.model,
-        effort: config.effort as "low",
-        system: systemPrompt(config, req.kind),
+        model: run.model,
+        effort: run.effort as "low",
+        system: run.system,
         prompt: userText,
         maxTurns: MAX_TURNS,
         tools: tools.map((t) => ({

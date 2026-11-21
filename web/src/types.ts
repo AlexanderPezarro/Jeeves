@@ -33,9 +33,11 @@ export interface When {
 
 export type Trigger = { event: string; when?: When } | { schedule: string; when?: When };
 
+export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+
 export type Step =
   | { id: string; call: { plugin: string; tool: string; args?: Record<string, unknown> } }
-  | { id: string; claude: { prompt: string; tools?: string[] } }
+  | { id: string; claude: { prompt: string; tools?: string[]; model?: string; effort?: Effort; history?: boolean } }
   | { id: string; message: { text: string; items?: unknown[] } }
   | { id: string; wait: { minutes: number } | { until: string } }
   | { id: string; if: CondExpr; then: Step[]; else?: Step[] }

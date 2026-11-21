@@ -1,6 +1,9 @@
 import { Cron } from "croner";
 import { z } from "zod";
 
+export const effortSchema = z.enum(["low", "medium", "high", "xhigh", "max"]);
+export type Effort = z.infer<typeof effortSchema>;
+
 const hhmm = z.string().regex(/^\d{2}:\d{2}$/, "use HH:MM");
 const weekday = z.enum(["mon", "tue", "wed", "thu", "fri", "sat", "sun"]);
 const slug = z.string().regex(/^[a-z0-9-]+$/, "lowercase letters, digits and dashes");
@@ -59,7 +62,7 @@ export const globalsSchema = z.object({
       }
     }, "unknown time zone"),
   model: z.string().default("claude-opus-5-5"),
-  effort: z.enum(["low", "medium", "high", "xhigh", "max"]).default("low"),
+  effort: effortSchema.default("low"),
   /** Hard cap on Claude runs per local day, as a cost guard. */
   max_runs_per_day: z.number().int().min(1).default(20),
   /** Extra context about you that every planning run sees. */
@@ -174,7 +177,7 @@ const planItemSchema = z.object({
 
 export type Step =
   | { id: string; call: { plugin: string; tool: string; args?: Record<string, unknown> } }
-  | { id: string; claude: { prompt: string; tools?: string[] } }
+  | { id: string; claude: { prompt: string; tools?: string[]; model?: string; effort?: Effort; history?: boolean } }
   | { id: string; message: { text: string; items?: { plugin?: string; item_id?: string | number; title: string; steps?: string[]; minutes?: number }[] } }
   | { id: string; wait: { minutes: number } | { until: string } }
   | { id: string; if: CondExpr; then: Step[]; else?: Step[] }
@@ -198,7 +201,23 @@ const claudeTool = z
 export const stepSchema: z.ZodType<Step> = z.lazy(() =>
   z.union([
     z.object({ id: stepId, call: z.object({ plugin: pluginName, tool: toolName, args: z.record(z.string(), z.unknown()).optional() }).strict() }).strict(),
-    z.object({ id: stepId, claude: z.object({ prompt: z.string().min(1), tools: z.array(claudeTool).optional() }).strict() }).strict(),
+    z
+      .object({
+        id: stepId,
+        claude: z
+          .object({
+            prompt: z.string().min(1),
+            tools: z.array(claudeTool).optional(),
+            /** Overrides the global model for this step. */
+            model: z.string().regex(/^claude-[a-z0-9.-]+$/, "a Claude model id, e.g. claude-sonnet-5-5").optional(),
+            /** Overrides the global effort for this step. */
+            effort: effortSchema.optional(),
+            /** Show Claude the recent chat (last 8 messages). */
+            history: z.boolean().optional(),
+          })
+          .strict(),
+      })
+      .strict(),
     z.object({ id: stepId, message: z.object({ text: z.string().min(1), items: z.array(planItemSchema).optional() }).strict() }).strict(),
     z
       .object({

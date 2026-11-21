@@ -33,7 +33,7 @@ Android app ──events──▶ server (workflows, scheduler, Claude) ──MC
    send a message, wait (minutes, or until a time of day), branch with `if`, or `stop`. A Claude
    step can call the plugins' tools (`todo__list_due_tasks`, `todo__complete_task`, …) plus two
    built-ins: `send_message` and `schedule_followup`. Only messages reach your phone.
-4. **Completion.** Tap the plugin's buttons (the to-do plugin's Start/Done/Skip) on a notification or in the Today list, or reply in the chat
+4. **Completion.** Tap the plugin's buttons (the to-do plugin's Start/Done/Skip) on a notification or in the Today list, or reply in the chat (a `message.received` event, see below)
    ("dishes done, laundry is in"). Starting a timed chore schedules a reminder for each of its timer steps
    (at the todo plugin's `timer_level`), and completing or skipping it cancels them. So a workflow
    shouldn't also wait and nudge for the same timer.
@@ -66,10 +66,21 @@ steps:
     message: { text: "{{event.name}} is done" }
 ```
 
-Step types: `call: {plugin, tool, args}`, `claude: {prompt, tools?}` (`tools` is an allowlist),
-`message: {text, items?}`, `wait`, `if: <condition> then: [...] else: [...]`, `stop: {reason?}`.
+Step types: `call: {plugin, tool, args}`, `claude: {prompt, tools?, model?, effort?, history?}`
+(`tools` is an allowlist; `model`/`effort` override the globals for that step; `history: true`
+adds the last 8 chat messages), `message: {text, items?}`, `wait`,
+`if: <condition> then: [...] else: [...]`, `stop: {reason?}`.
 Conditions are `{path, eq|ne|gt|gte|lt|lte|contains|exists}` or `{all: [...]}` / `{any: [...]}`.
 Templates only know `{{event.<field>}}` and `{{steps.<id>.<field>}}`.
+
+**Chat is a workflow too.** What you write in the app's chat arrives as a `message.received`
+event (`{{event.text}}`), answered by `workflows/chat-reply.yaml` (created on first start if no
+workflow listens for it; delete or edit it like any other). If nothing fires, Jeeves tells you so.
+
+**What Claude is told.** The system prompt only says who Jeeves is and how messages reach you.
+The task comes from the step's prompt, `about_me` is added as context, and each plugin can add
+`instructions` in its manifest (the to-do plugin's say how to build a plan), included only when
+that plugin's tools are offered in the step.
 
 The server watches `config/` and reloads on save. A file that fails validation keeps its last good
 version and shows up in `GET /config/errors`; the others still load. Edits through the API are

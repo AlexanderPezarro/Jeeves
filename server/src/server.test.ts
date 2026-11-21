@@ -5,7 +5,7 @@ import type { CliRunInput, CliRunner } from "./cli.js";
 import { staticConfig } from "./config.js";
 import { Db } from "./db.js";
 import { Engine } from "./engine.js";
-import { ARRIVE_HOME, FakeTodo, MANUAL_PLAN, pair, RecordingNotifier, reply, setup, toolUse } from "./testkit.js";
+import { ARRIVE_HOME, CHAT_REPLY, FakeTodo, MANUAL_PLAN, pair, RecordingNotifier, reply, setup, toolUse } from "./testkit.js";
 
 describe("arrive home, end to end", () => {
   it("plans the evening and pushes an easiest-first list", async () => {
@@ -139,7 +139,7 @@ describe("Claude Code CLI backend", () => {
     const clock = { now: new Date("2026-11-14T18:20:00Z") };
     const now = () => clock.now;
     const db = new Db();
-    const config = staticConfig({ timezone: "Europe/London" }, [ARRIVE_HOME, { ...MANUAL_PLAN, notify_on_failure: false }]);
+    const config = staticConfig({ timezone: "Europe/London" }, [ARRIVE_HOME, { ...MANUAL_PLAN, notify_on_failure: false }, CHAT_REPLY]);
     const plugins = new FakeTodo(clock);
     const notifier = new RecordingNotifier();
     const inputs: CliRunInput[] = [];
@@ -239,5 +239,71 @@ describe("push registration", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ public_key: "PUBKEY" });
     expect((await on.inject({ method: "GET", url: "/push/vapid-key" })).statusCode).toBe(401);
+  });
+});
+
+describe("the LLM step and chat", () => {
+  const systemOf = (req: { system?: unknown }) => String(req.system);
+
+  it("uses a generic system prompt plus the instructions of plugins whose tools are offered", async () => {
+    const s = setup({
+      workflows: [
+        { id: "all-tools", cooldown: 0, triggers: [{ event: "manual.plan" }], steps: [{ id: "a", claude: { prompt: "Plan." } }] },
+        { id: "no-plugins", cooldown: 0, triggers: [{ event: "manual.plan" }], steps: [{ id: "b", claude: { prompt: "Hi.", tools: ["send_message"] } }] },
+      ],
+      script: [reply("end_turn", [{ type: "text", text: "one" }]), reply("end_turn", [{ type: "text", text: "two" }])],
+    });
+    s.engine.handleEvent("manual.plan", {}, null);
+    await s.engine.idle();
+    const [withTodo, without] = s.claude.requests;
+    expect(systemOf(withTodo)).toContain("## Chores (plugin `todo`)\nPlan easiest first.");
+    expect(systemOf(without)).not.toMatch(/Plan easiest first|chore/i);
+    for (const r of [withTodo, without]) {
+      expect(systemOf(r)).toContain("You are Jeeves");
+      expect(systemOf(r)).not.toMatch(/Alexander/);
+    }
+  });
+
+  it("lets a step pick its model and effort, and include the recent chat", async () => {
+    const s = setup({
+      workflows: [
+        {
+          id: "deep",
+          cooldown: 0,
+          triggers: [{ event: "manual.plan" }],
+          steps: [{ id: "think", claude: { prompt: "Think hard.", model: "claude-fable-5-2", effort: "high", history: true } }],
+        },
+      ],
+      script: [reply("end_turn", [{ type: "text", text: "done" }])],
+    });
+    s.db.addMessage("out", "Earlier reply", null, null, s.clock.now);
+    s.engine.handleEvent("manual.plan", {}, null);
+    await s.engine.idle();
+    const [req] = s.claude.requests;
+    expect(req).toMatchObject({ model: "claude-fable-5-2", output_config: { effort: "high" } });
+    expect(JSON.stringify(req.messages[0].content)).toContain("Jeeves: Earlier reply");
+    expect(s.db.recentRuns()[0]).toMatchObject({ model: "claude-fable-5-2" });
+  });
+
+  it("turns a chat message into message.received, answered by the chat workflow", async () => {
+    const s = setup({ script: [reply("tool_use", [toolUse("t1", "send_message", { text: "On it.", items: [] })]), reply("end_turn", [])] });
+    const headers = await pair(s.app);
+    await s.app.inject({ method: "POST", url: "/messages", headers, payload: { text: "dishes done" } });
+    await s.engine.idle();
+    const ev = s.db.lastEvent("message.received", "9999");
+    expect(ev?.payload).toMatchObject({ text: "dishes done" });
+    expect(s.db.workflowRuns()[0]).toMatchObject({ workflow_id: "chat-reply", status: "ok" });
+    const input = JSON.stringify(s.claude.requests[0].messages[0].content);
+    expect(input).toContain('I wrote: \\"dishes done\\"');
+    expect(input).toContain("User: dishes done");
+    expect(s.notifier.sent.map((m) => m.text)).toEqual(["On it."]);
+  });
+
+  it("says so when no workflow answers a chat message", async () => {
+    const s = setup({ workflows: [ARRIVE_HOME] });
+    s.engine.handleUserMessage("hello?");
+    await s.engine.idle();
+    expect(s.claude.requests).toHaveLength(0);
+    expect(s.notifier.sent[0].text).toMatch(/Nothing answered that message .*message\.received/);
   });
 });

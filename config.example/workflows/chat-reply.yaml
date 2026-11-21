@@ -1,0 +1,17 @@
+# Answers what you write in the app's chat. Each message arrives as a message.received event
+# ({{event.text}}); change the prompt to change how Jeeves replies, or add conditions to route
+# some messages elsewhere.
+id: chat-reply
+description: Answer my chat messages
+cooldown: 0
+triggers:
+  - event: message.received
+steps:
+  - id: reply
+    claude:
+      prompt: |
+        I wrote to you: "{{event.text}}"
+        Work out what I mean and make any changes with the plugin tools (for example, mark the
+        tasks I mention as done), then reply once with send_message, briefly.
+      # Shows Claude the last few chat messages, so follow-ups like "and the bins" make sense.
+      history: true
