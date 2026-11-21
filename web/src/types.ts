@@ -22,7 +22,8 @@ export type Condition = {
 export type CondExpr = Condition | { all: CondExpr[] } | { any: CondExpr[] };
 
 export interface When {
-  ssid?: string;
+  /** One network, or a list where any of them matches. */
+  ssid?: string | string[];
   after?: string;
   before?: string;
   days?: string[];

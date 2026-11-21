@@ -1,5 +1,5 @@
 import { describeCondition, evalCondition } from "./conditions.js";
-import { isSchedule, type Trigger, type Workflow } from "./config.js";
+import { isSchedule, ssidList, type Trigger, type Workflow } from "./config.js";
 import type { Db, EventRow } from "./db.js";
 import type { TemplateContext } from "./template.js";
 import { localTime, type LocalTime } from "./time.js";
@@ -66,7 +66,10 @@ export function blockReason(workflow: Workflow, trigger: Trigger, event: EventRo
   const w = trigger.when ?? {};
   const ssid = typeof event.payload.ssid === "string" ? event.payload.ssid : undefined;
 
-  if (w.ssid && ssid !== w.ssid) return `SSID ${ssid ?? "(none)"} is not ${w.ssid}`;
+  const wanted = ssidList(w.ssid);
+  if (wanted.length && (ssid === undefined || !wanted.includes(ssid))) {
+    return `SSID ${ssid ?? "(none)"} is not ${wanted.length === 1 ? wanted[0] : `one of ${wanted.join(", ")}`}`;
+  }
   if (w.days && !w.days.includes(local.weekday)) return `not on ${local.weekday}`;
   if (w.after && local.time < w.after) return `before ${w.after}`;
   if (w.before && local.time >= w.before) return `after ${w.before}`;

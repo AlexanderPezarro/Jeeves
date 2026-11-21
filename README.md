@@ -22,8 +22,9 @@ Android app ──events──▶ server (workflows, scheduler, Claude) ──MC
 
 ## How it works
 
-1. **Triggers.** The app watches for your home Wi-Fi. When you join it, it posts `wifi.connected`
-   with how long you were away. Schedules (cron) and the app's "Plan my evening" button are triggers
+1. **Triggers.** The app watches the Wi-Fi networks you list (home, work, …). When you join one, it
+   posts `wifi.connected` with that network's `ssid` and how long you were away from it; leaving
+   posts `wifi.disconnected`. Schedules (cron) and the app's "Plan my evening" button are triggers
    too.
 2. **Workflows.** Each file in `config/workflows/` says which events matter, e.g. "home Wi-Fi,
    after 17:00, away at least 2 hours, once a day", and what to do then. No Claude call is spent
@@ -56,7 +57,7 @@ cooldown: 0                     # "daily" (default) or minutes between fires
 notify_on_failure: true         # message me if a step fails (default)
 triggers:
   - event: todo.task_started    # or wifi.connected, manual.plan, …; or `schedule: "0 9 * * sat"`
-    when:                       # optional: ssid, after, before, days, min_away_minutes, conditions
+    when:                       # optional: ssid (a name or a list), after, before, days, min_away_minutes, conditions
       conditions: [{ path: event.chore_id, eq: laundry }]
 steps:
   - id: pause
@@ -149,7 +150,8 @@ CI builds a debug APK on every push: open the latest run under **Actions** and d
 First run:
 
 1. **Settings:** enter the server URL and the `JEEVES_PAIRING_CODE` from `.env`, then pair.
-2. Enter your home Wi-Fi name (or tap "Use the current Wi-Fi" while at home) and save.
+2. Under **Wi-Fi networks**, add each network Jeeves should watch: type its name and tap Add, or
+   tap "Add the current Wi-Fi" while you're on it. Remove one with its Remove button.
 3. Allow notifications and location "all the time". Android only reveals the Wi-Fi name to apps
    with location access, and "all the time" lets arrivals register while the app is closed.
 

@@ -116,7 +116,8 @@ export const condExprSchema: z.ZodType<CondExpr> = z.lazy(() =>
 
 export const whenSchema = z
   .object({
-    ssid: z.string().optional(),
+    /** One Wi-Fi name, or a list: the trigger matches if the event's SSID is any of them. */
+    ssid: z.union([z.string(), z.array(z.string()).min(1)]).optional(),
     after: hhmm.optional(),
     before: hhmm.optional(),
     days: z.array(weekday).optional(),
@@ -128,6 +129,12 @@ export const whenSchema = z
   .strict();
 
 export type When = z.infer<typeof whenSchema>;
+
+/** `when.ssid` as a list (empty when unset), whether it was written as one name or a list. */
+export function ssidList(ssid: When["ssid"]): string[] {
+  if (ssid === undefined) return [];
+  return (Array.isArray(ssid) ? ssid : [ssid]).filter((s) => s !== "");
+}
 
 const eventTrigger = z
   .object({ event: z.string().regex(/^[a-z0-9_.-]+$/, "an event type like wifi.connected or todo.task_started"), when: whenSchema.optional() })

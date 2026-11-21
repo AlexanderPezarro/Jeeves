@@ -61,6 +61,31 @@ describe("triggers", () => {
     });
   });
 
+  it("matches any SSID in a list, timing the away period per network", () => {
+    const wf = workflowSchema.parse({
+      ...ARRIVE_HOME,
+      triggers: [{ event: "wifi.connected", when: { ssid: ["home", "work"], min_away_minutes: 120 } }],
+    });
+    const at = (iso: string, ssid: string) => {
+      const now = new Date(iso);
+      return evaluateWorkflows([wf], s.db.insertEvent("wifi.connected", { ssid }, 1, now), s.db, "Europe/London", now)[0];
+    };
+    s.db.insertEvent("wifi.disconnected", { ssid: "home" }, 1, new Date("2026-11-14T09:00:00Z"));
+    s.db.insertEvent("wifi.disconnected", { ssid: "work" }, 1, new Date("2026-11-14T17:50:00Z"));
+    // Left work only 30 minutes ago, even though home was left long before.
+    expect(at("2026-11-14T18:20:00Z", "work").reason).toBe("away 30 min, needs 120");
+    expect(at("2026-11-14T18:20:00Z", "cafe").reason).toBe("SSID cafe is not one of home, work");
+    expect(at("2026-11-14T18:20:00Z", "home")).toMatchObject({ fired: true });
+  });
+
+  it("accepts a single SSID or a non-empty list in the schema", () => {
+    const parse = (ssid: unknown) => workflowSchema.safeParse({ ...ARRIVE_HOME, triggers: [{ event: "wifi.connected", when: { ssid } }] }).success;
+    expect(parse("home")).toBe(true);
+    expect(parse(["home", "work"])).toBe(true);
+    expect(parse([])).toBe(false);
+    expect(parse(3)).toBe(false);
+  });
+
   it("ignores disabled workflows", () => {
     const off = workflowSchema.parse({ ...ARRIVE_HOME, enabled: false });
     const event = s.db.insertEvent("wifi.connected", { ssid: "home", away_minutes: 300 }, 1, new Date("2026-11-14T18:20:00Z"));

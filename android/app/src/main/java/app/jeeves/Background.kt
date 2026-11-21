@@ -52,6 +52,18 @@ object WifiTrigger {
         val ssid = raw.trim('"')
         return ssid.takeUnless { it.isBlank() || it == "<unknown ssid>" }
     }
+
+    /**
+     * Saves the watched networks and treats "right now" as the starting state, so adding the network
+     * you're on doesn't fire an arrival and removing it doesn't fire a departure.
+     */
+    fun saveNetworks(context: Context, prefs: Prefs, networks: List<String>) {
+        prefs.wifiNetworks = networks
+        val saved = prefs.wifiNetworks
+        prefs.connectedSsid = currentSsid(context)?.takeIf { it in saved }
+        prefs.leftAt = prefs.leftAt.filterKeys { it in saved }
+        Work.checkWifi(context, delaySeconds = 0)
+    }
 }
 
 class WifiReceiver : BroadcastReceiver() {
@@ -96,28 +108,37 @@ object Work {
     }
 }
 
-/** Compares the current Wi-Fi with the last state and tells the server about arrivals and departures. */
+/**
+ * Compares the current Wi-Fi with the last state and tells the server about arrivals and departures
+ * on any watched network. Moving straight from one watched network to another sends a disconnect for
+ * the old one, then a connect for the new one. Away time is tracked per network.
+ */
 suspend fun checkWifiState(context: Context) {
     val prefs = Prefs(context)
-    if (!prefs.isPaired || prefs.homeSsid.isBlank()) return
-    val ssid = WifiTrigger.currentSsid(context)
-    val onHome = ssid == prefs.homeSsid
+    val networks = prefs.wifiNetworks
+    if (!prefs.isPaired || networks.isEmpty()) return
+    val current = WifiTrigger.currentSsid(context)?.takeIf { it in networks }
+    val previous = prefs.connectedSsid
+    if (current == previous) return
     val api = Api(prefs)
     val now = System.currentTimeMillis()
 
-    if (onHome && !prefs.onHomeWifi) {
-        val awayMinutes = if (prefs.leftHomeAt > 0) (now - prefs.leftHomeAt) / 60_000 else null
+    if (previous != null) {
+        // Record the departure before posting, so a failed post isn't repeated as a second departure.
+        prefs.connectedSsid = null
+        prefs.leftAt = prefs.leftAt + (previous to now)
+        api.postEvent("wifi.disconnected", buildJsonObject { put("ssid", previous) })
+    }
+    if (current != null) {
+        val left = prefs.leftAt[current]
+        val awayMinutes = if (left != null && left > 0) (now - left) / 60_000 else null
         api.postEvent("wifi.connected", buildJsonObject {
-            put("ssid", ssid)
+            put("ssid", current)
             if (awayMinutes != null) put("away_minutes", awayMinutes)
         })
-        prefs.onHomeWifi = true
-        prefs.leftHomeAt = 0
+        prefs.connectedSsid = current
+        prefs.leftAt = prefs.leftAt - current
         Work.pollSoon(context)
-    } else if (!onHome && prefs.onHomeWifi) {
-        prefs.onHomeWifi = false
-        prefs.leftHomeAt = now
-        api.postEvent("wifi.disconnected", buildJsonObject { put("ssid", prefs.homeSsid) })
     }
 }
 
