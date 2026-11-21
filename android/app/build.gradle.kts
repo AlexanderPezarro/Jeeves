@@ -79,4 +79,6 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
     testImplementation("junit:junit:4.13.2")
+    // Reads config.example/workflows/*.yaml in the editor's round-trip test.
+    testImplementation("org.yaml:snakeyaml:2.3")
 }

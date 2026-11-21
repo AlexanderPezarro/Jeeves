@@ -245,6 +245,47 @@ data class WorkflowSummary(
 
 @Serializable private data class WorkflowsResponse(val workflows: List<WorkflowSummary>)
 
+/**
+ * One workflow file. [raw] is the file as written (no schema defaults), which the native editor edits;
+ * [parsed] has defaults applied. [error] is set when the file on disk is currently broken.
+ */
+@Serializable
+data class WorkflowFile(
+    val yaml: String = "",
+    val parsed: JsonObject? = null,
+    val raw: JsonObject? = null,
+    val hash: String? = null,
+    val error: String? = null,
+)
+
+/** A plugin tool as /tools lists it. */
+@Serializable
+data class ToolInfo(
+    val name: String,
+    val plugin: String,
+    val tool: String,
+    val title: String? = null,
+    val description: String = "",
+    val input_schema: JsonObject = JsonObject(emptyMap()),
+    val output_schema: JsonObject? = null,
+    val read_only: Boolean = false,
+    val plugin_title: String? = null,
+)
+
+@Serializable
+data class EventInfo(
+    val type: String,
+    val title: String? = null,
+    val description: String? = null,
+    val payload_schema: JsonObject? = null,
+    val source: String? = null,
+)
+
+@Serializable
+data class EventTypes(val event_types: List<String> = emptyList(), val events: List<EventInfo> = emptyList())
+
+@Serializable private data class ToolsResponse(val tools: List<ToolInfo> = emptyList())
+
 @Serializable
 data class RunNowResult(val workflow_run_id: Long, val run: WorkflowRun? = null)
 
@@ -480,6 +521,30 @@ class Api(private val prefs: Prefs) {
             put("enabled", enabled)
             put("hash", hash)
         })
+    }
+
+    /** One workflow file. A missing file is an [ApiException] with code 404. */
+    suspend fun workflow(id: String): WorkflowFile = json.decodeFromString(call("GET", "/workflows/${enc(id)}"))
+
+    /** Creates or updates a workflow. [hash] is the file's hash as last read, or null to create it. */
+    suspend fun saveWorkflow(id: String, workflow: JsonObject, hash: String?): WorkflowFile =
+        json.decodeFromString(call("PUT", "/workflows/${enc(id)}", buildJsonObject {
+            put("workflow", workflow)
+            put("hash", hash)
+        }))
+
+    suspend fun deleteWorkflow(id: String, hash: String?) {
+        call("DELETE", "/workflows/${enc(id)}" + if (hash != null) "?hash=${enc(hash)}" else "")
+    }
+
+    suspend fun tools(): List<ToolInfo> = json.decodeFromString<ToolsResponse>(call("GET", "/tools")).tools
+
+    suspend fun eventTypes(): EventTypes = json.decodeFromString(call("GET", "/event-types"))
+
+    /** The timezone from jeeves.yaml, or "UTC" when it can't be read. */
+    suspend fun timezone(): String {
+        val parsed = json.parseToJsonElement(call("GET", "/config/globals")) as? JsonObject
+        return ((parsed?.get("parsed") as? JsonObject)?.get("timezone") as? JsonPrimitive)?.content ?: "UTC"
     }
 
     suspend fun runWorkflow(id: String, dryRun: Boolean): RunNowResult =

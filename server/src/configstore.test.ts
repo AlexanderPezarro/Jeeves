@@ -175,6 +175,10 @@ describe("ConfigStore", () => {
 
     const one = (await s.app.inject({ method: "GET", url: "/workflows/manual-plan", headers })).json();
     expect(one.parsed.id).toBe("manual-plan");
+    // raw is the file as written, without the schema's defaults.
+    expect(one.raw.id).toBe("manual-plan");
+    expect(one.raw).not.toHaveProperty("enabled");
+    expect(one.parsed.enabled).toBe(true);
 
     const bad = await s.app.inject({ method: "PUT", url: "/workflows/manual-plan", headers, payload: { yaml: "steps: 3", hash: one.hash } });
     expect(bad.statusCode).toBe(400);

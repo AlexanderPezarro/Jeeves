@@ -337,7 +337,11 @@ export class ConfigStore extends EventEmitter implements ConfigSource {
   }
 
   /** The file as it is on disk now (which may be newer or invalid), plus the last good parse. */
-  readWorkflow(id: string): (FileView<Workflow | null> & { error: string | null }) | undefined {
+  /**
+   * `parsed` has defaults applied; `raw` is the file's own content as JSON (null if it doesn't parse),
+   * so a client that edits and writes back doesn't add keys the file never had.
+   */
+  readWorkflow(id: string): (FileView<Workflow | null> & { error: string | null; raw: unknown }) | undefined {
     const file = this.workflowFile(id);
     let text: string;
     try {
@@ -345,7 +349,9 @@ export class ConfigStore extends EventEmitter implements ConfigSource {
     } catch {
       return undefined;
     }
-    return { yaml: text, parsed: this.workflowFiles.get(id)?.value ?? null, hash: sha256(text), error: this.fileErrors.get(file)?.error ?? null };
+    const doc = parseDocument(text);
+    const raw = yamlErrors(doc) ? null : doc.toJS() ?? null;
+    return { yaml: text, parsed: this.workflowFiles.get(id)?.value ?? null, raw, hash: sha256(text), error: this.fileErrors.get(file)?.error ?? null };
   }
 
   readGlobals(): FileView<Globals> {
