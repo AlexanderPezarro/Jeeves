@@ -28,6 +28,8 @@ export interface AppDeps {
   /** Built web UI (web/dist), served at /admin/. */
   webDir?: string;
   uiTokens?: UiTokens;
+  /** VAPID public key (base64url) served to the app so it can register for Web Push. Unset: push is off. */
+  vapidPublicKey?: string;
 }
 
 export interface Identity {
@@ -47,7 +49,7 @@ const eventBody = z.object({
   payload: z.record(z.string(), z.unknown()).default({}),
 });
 
-export function buildApp({ db, engine, pairingCode, store, config = store, plugins, now, proxyAuth, webDir, uiTokens = new UiTokens() }: AppDeps) {
+export function buildApp({ db, engine, pairingCode, store, config = store, plugins, now, proxyAuth, webDir, uiTokens = new UiTokens(), vapidPublicKey }: AppDeps) {
   const app = Fastify({ logger: process.env.NODE_ENV !== "test" });
   const trustedPeer = peerMatcher(proxyAuth ?? { trust: false, trustedProxies: [] });
   const managed = isManagedHost(plugins) ? plugins : undefined;
@@ -86,10 +88,26 @@ export function buildApp({ db, engine, pairingCode, store, config = store, plugi
     });
 
     authed.put("/devices/me/push", async (req, reply) => {
-      const body = z.object({ fcm_token: z.string().nullable() }).safeParse(req.body);
-      if (!body.success) return reply.code(400).send({ error: "fcm_token is required" });
-      db.setPushToken(req.device!.id, body.data.fcm_token);
+      const b64url = z.string().regex(/^[A-Za-z0-9_-]+={0,2}$/);
+      const body = z
+        .union([
+          z.object({ fcm_token: z.string().nullable() }),
+          z.object({ endpoint: z.url(), p256dh: b64url, auth: b64url }),
+          z.object({ endpoint: z.null() }),
+        ])
+        .safeParse(req.body);
+      if (!body.success) return reply.code(400).send({ error: "expected fcm_token, or endpoint with p256dh and auth, or endpoint: null" });
+      const data = body.data;
+      if ("fcm_token" in data) db.setPushToken(req.device!.id, data.fcm_token);
+      else if (data.endpoint === null) db.setWebPush(req.device!.id, null);
+      else db.setWebPush(req.device!.id, { endpoint: data.endpoint, p256dh: data.p256dh, auth: data.auth });
       return { ok: true };
+    });
+
+    /** The public VAPID key the app passes to UnifiedPush.register. */
+    authed.get("/push/vapid-key", async (_req, reply) => {
+      if (!vapidPublicKey) return reply.code(404).send({ error: "push_off" });
+      return { public_key: vapidPublicKey };
     });
 
     /** Trigger events from the phone, e.g. {type: "wifi.connected", payload: {ssid: "home"}}. */

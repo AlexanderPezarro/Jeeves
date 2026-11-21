@@ -20,13 +20,16 @@ services:
       # (set JEEVES_TRUSTED_PROXY in .env). Off unless both are set.
       JEEVES_TRUST_PROXY_AUTH: ${JEEVES_TRUST_PROXY_AUTH:-0}
       JEEVES_TRUSTED_PROXY: ${JEEVES_TRUSTED_PROXY:-}
+      # Optional "from=to": post pushes to ntfy over the compose network instead of its public name,
+      # e.g. https://ntfy.alexanderpezarro.uk=http://ntfy:80 (the name only resolves to a Tailscale IP).
+      PUSH_ENDPOINT_REWRITE: ${PUSH_ENDPOINT_REWRITE:-}
     volumes:
       - ./config:/config
       - jeeves-data:/data
       # The host's Claude Code login (subscription credentials). Container user is uid 1000.
       - ${CLAUDE_HOME:-~/.claude}:/home/node/.claude
-      # Uncomment to enable push, and set FIREBASE_SERVICE_ACCOUNT=/secrets/firebase.json in .env
-      # - ./firebase.json:/secrets/firebase.json:ro
+      # Push: UnifiedPush through the ntfy service below. See "Push (ntfy + UnifiedPush)" in docs/deploy.md.
+      # (The old FCM path still works: mount ./firebase.json and set FIREBASE_SERVICE_ACCOUNT in .env.)
     ports:
       # Caddy reaches the server over proxy_network, so set JEEVES_BIND=127.0.0.1 in .env to keep
       # this port off the LAN (recommended once the web UI is on, see docs/deploy.md).
@@ -55,6 +58,22 @@ services:
       - todo-data:/data
     # Not published: only the server talks to the plugin, over the compose network.
 
+  ntfy:
+    image: binwiederhier/ntfy:v2.11.0
+    command: serve
+    restart: unless-stopped
+    environment:
+      TZ: Europe/London
+    volumes:
+      - ntfy-cache:/var/cache/ntfy
+      - ntfy-auth:/var/lib/ntfy
+      - ./ntfy/server.yml:/etc/ntfy/server.yml:ro
+    # No ports: Caddy reaches it as jeeves-ntfy-1:80 over proxy_network (Tailscale-only, own ACL,
+    # no Authelia), and the Jeeves server posts to it over the default network.
+    networks:
+      - default
+      - proxy_network
+
 networks:
   proxy_network:
     external: true
@@ -62,3 +81,5 @@ networks:
 volumes:
   jeeves-data:
   todo-data:
+  ntfy-cache:
+  ntfy-auth:

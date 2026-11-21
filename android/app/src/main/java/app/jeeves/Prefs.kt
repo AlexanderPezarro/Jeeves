@@ -59,8 +59,30 @@ class Prefs(context: Context) {
         }
     }
 
+    /** The UnifiedPush endpoint this phone registered with the server, or null. */
+    var pushEndpoint: String?
+        get() = sp.getString("push_endpoint", null)
+        set(v) = sp.edit { putString("push_endpoint", v) }
+
+    /** The last 100 message ids shown as notifications (CSV), so push and polling never show one twice. */
+    var shownMessageIds: List<Long>
+        get() = sp.getString("shown_message_ids", null)?.split(',')?.mapNotNull { it.toLongOrNull() } ?: emptyList()
+        set(v) = sp.edit { putString("shown_message_ids", v.takeLast(100).joinToString(",")) }
+
+    /** Records [id] as shown. Returns false if it already was. Push and poll can race, hence the lock. */
+    fun markShown(id: Long): Boolean = synchronized(shownLock) {
+        val ids = shownMessageIds
+        if (id in ids) return false
+        shownMessageIds = ids + id
+        true
+    }
+
     /** Highest message id already shown, so polling never repeats a notification. */
     var lastMessageId: Long
         get() = sp.getLong("last_message_id", 0L)
         set(v) = sp.edit { putLong("last_message_id", v) }
+
+    private companion object {
+        val shownLock = Any()
+    }
 }

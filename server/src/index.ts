@@ -8,6 +8,7 @@ import { Db } from "./db.js";
 import { Engine } from "./engine.js";
 import { migrateRules } from "./migrate.js";
 import { makeNotifier } from "./notify.js";
+import { printVapidKeys } from "./vapid.js";
 import { McpPluginHost } from "./plugins.js";
 import { proxyAuthFromEnv } from "./auth.js";
 import { recordConfigActivity } from "./timeline.js";
@@ -80,7 +81,7 @@ async function main() {
   const proxyAuth = proxyAuthFromEnv();
   if (proxyAuth.trust) console.log(`Trusting Remote-User on /admin/api from ${proxyAuth.trustedProxies.join(", ") || "(nobody: set JEEVES_TRUSTED_PROXY)"}`);
   const webDir = resolve(process.env.JEEVES_WEB_DIR ?? "web");
-  const app = buildApp({ db, engine, pairingCode, store, plugins, proxyAuth, webDir });
+  const app = buildApp({ db, engine, pairingCode, store, plugins, proxyAuth, webDir, vapidPublicKey: process.env.VAPID_PUBLIC_KEY || undefined });
   await app.listen({ host: "0.0.0.0", port: Number(process.env.PORT ?? 8080) });
 
   // Contact plugins now and every 5 minutes: keeps status fresh, fetches manifests and
@@ -100,7 +101,11 @@ async function main() {
   process.on("SIGINT", shutdown);
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+if (process.argv[2] === "vapid") {
+  printVapidKeys();
+} else {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}

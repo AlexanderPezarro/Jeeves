@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Agent } from "./agent.js";
+import { buildApp } from "./app.js";
 import type { CliRunInput, CliRunner } from "./cli.js";
 import { staticConfig } from "./config.js";
 import { Db } from "./db.js";
@@ -184,5 +185,46 @@ describe("Claude Code CLI backend", () => {
     s.engine.handleEvent("manual.plan", {}, null);
     await s.engine.idle();
     expect(s.db.recentRuns()[0]).toMatchObject({ status: "error", error: "CLI not logged in" });
+  });
+});
+
+describe("push registration", () => {
+  const sub = { endpoint: "https://ntfy.example/upABC", p256dh: "BPk-_abc", auth: "au_th-1" };
+
+  it("stores and clears a web push subscription, and still accepts fcm_token", async () => {
+    const s = setup();
+    const headers = await pair(s.app);
+    const put = (payload: unknown) => s.app.inject({ method: "PUT", url: "/devices/me/push", headers, payload: payload as object });
+
+    expect((await put(sub)).statusCode).toBe(200);
+    expect(s.db.webPushSubscriptions()).toMatchObject([sub]);
+
+    expect((await put({ endpoint: null })).statusCode).toBe(200);
+    expect(s.db.webPushSubscriptions()).toEqual([]);
+
+    expect((await put({ fcm_token: "tok" })).statusCode).toBe(200);
+    expect(s.db.pushTokens()).toEqual(["tok"]);
+  });
+
+  it("rejects bad bodies with 400", async () => {
+    const s = setup();
+    const headers = await pair(s.app);
+    for (const payload of [{}, { endpoint: "not a url", p256dh: "a", auth: "b" }, { endpoint: sub.endpoint }, { endpoint: sub.endpoint, p256dh: "a b", auth: "c" }]) {
+      expect((await s.app.inject({ method: "PUT", url: "/devices/me/push", headers, payload })).statusCode).toBe(400);
+    }
+  });
+
+  it("serves the VAPID public key, 404 when push is off, 401 without a token", async () => {
+    const s = setup();
+    const headers = await pair(s.app);
+    const off = await s.app.inject({ method: "GET", url: "/push/vapid-key", headers });
+    expect(off.statusCode).toBe(404);
+    expect(off.json()).toEqual({ error: "push_off" });
+
+    const on = buildApp({ db: s.db, engine: s.engine, pairingCode: "pair-me-please", store: s.store, config: s.config, vapidPublicKey: "PUBKEY" });
+    const res = await on.inject({ method: "GET", url: "/push/vapid-key", headers });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ public_key: "PUBKEY" });
+    expect((await on.inject({ method: "GET", url: "/push/vapid-key" })).statusCode).toBe(401);
   });
 });

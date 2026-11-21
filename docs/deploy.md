@@ -103,3 +103,120 @@ The `authelia/` directory is root-owned. If the edit or the restart needs root, 
 - Post a test event: `curl -H "Authorization: Bearer <device token>" -H 'content-type: application/json'
   -d '{"type":"wifi.connected","payload":{"ssid":"MyHomeWiFi","away_minutes":180}}'
   https://jeeves.alexanderpezarro.uk/events` and look at Activity.
+
+
+## 5. Push (ntfy + UnifiedPush)
+
+Push uses UnifiedPush through a self-hosted ntfy that is reachable only over Tailscale. No Firebase.
+Without it nothing changes: the app keeps polling every 15 minutes, which stays on as the fallback.
+
+```
+server --Web Push (VAPID, aes128gcm)--> ntfy (jeeves-ntfy-1) <--stream-- ntfy app on the phone --> Jeeves app
+```
+
+Pushes only reach the phone while it is on Tailscale. ntfy caches them for 12 h, so they arrive when it
+reconnects (the app drops duplicates by message id).
+
+### 5.1 ntfy container
+
+`docker-compose.yml` has an `ntfy` service (pinned `binwiederhier/ntfy`, config in `ntfy/server.yml`,
+no published ports). It is on `proxy_network` so Caddy reaches it as `jeeves-ntfy-1:80`, and on
+`default` so the Jeeves server can post to it. Start it as part of the real `jeeves` project:
+
+```bash
+cd ~/projects/Jeeves && docker compose up -d ntfy
+docker ps --filter name=ntfy --format '{{.Names}}'   # confirm the container name used in the Caddy block
+```
+
+ACL, run once (everything is denied by default):
+
+```bash
+docker compose exec ntfy ntfy access everyone 'up*' write-only   # the Jeeves server posts without credentials
+docker compose exec ntfy ntfy user add phone                      # prompts for a password: keep it for the phone
+docker compose exec ntfy ntfy access phone 'up*' read-write       # the ntfy app subscribes as this user
+docker compose exec ntfy ntfy access                              # review
+```
+
+### 5.2 Caddy (`~/projects/proxy/Caddyfile`), proposed
+
+A top-level Tier 3 block. It deliberately has **no `forward_auth`**: ntfy enforces its own ACL and the
+phone's distributor can't do Authelia, so do not add an Authelia rule or a `forward_auth` later. Keep it
+out of the `:8080` (cloudflared, public) block and out of `cloudflared-config.yml`.
+
+```caddyfile
+# Tier 3: ntfy (UnifiedPush distributor for the Jeeves app). Tailscale-only. No forward_auth on
+# purpose: ntfy has its own ACL (anonymous write-only on up*), and the phone's distributor can't
+# do Authelia. Don't add an Authelia rule for this name.
+ntfy.alexanderpezarro.uk {
+    tls {
+        dns cloudflare {env.CF_DNS_API_TOKEN}
+    }
+    reverse_proxy jeeves-ntfy-1:80
+}
+```
+
+Apply it to the live file in place (never `sed -i`, see the Tier 3 notes), then
+`docker exec proxy-caddy-1 caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile` and
+`docker exec proxy-caddy-1 caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile`.
+Caddy's default proxy handles ntfy's long-lived streams and WebSockets; add nothing unless testing
+shows timeouts.
+
+### 5.3 DNS
+
+Unproxied (grey cloud) `A ntfy -> 100.123.74.6` in the `alexanderpezarro.uk` Cloudflare zone, TTL auto or
+300, using `CF_DNS_API_TOKEN` from `~/projects/proxy/.env` through a small stdlib Python script (as for
+`cc.` and `aw.`).
+
+### 5.4 VAPID keys and `.env`
+
+```bash
+docker compose run --rm server node dist/index.js vapid
+```
+
+Paste the three lines (`VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT=mailto:you@example.com`)
+into `.env`, then rebuild and restart: `docker compose up -d --build server ntfy`. The server logs
+`Push: Web Push (UnifiedPush) is on`. With VAPID set, Web Push wins even if `FIREBASE_SERVICE_ACCOUNT` is
+also set.
+
+### 5.5 Can the server reach ntfy? (`PUSH_ENDPOINT_REWRITE`)
+
+The endpoint the ntfy app hands out is `https://ntfy.alexanderpezarro.uk/up…`, and that name resolves to the
+Tailscale IP, which containers may not be able to reach. Test first:
+
+```bash
+docker exec jeeves-server-1 wget -S -O- -T 5 https://ntfy.alexanderpezarro.uk/v1/health
+```
+
+If that fails, set this in `.env` and run `docker compose up -d server`. The server then posts to ntfy over
+the compose network and still stores the public endpoint:
+
+```bash
+PUSH_ENDPOINT_REWRITE=https://ntfy.alexanderpezarro.uk=http://ntfy:80
+```
+
+(The alternative, `extra_hosts` pointing the name at Caddy's `proxy_network` address, breaks whenever that
+address changes, so prefer the rewrite.)
+
+### 5.6 Verify the infrastructure
+
+```bash
+curl --resolve ntfy.alexanderpezarro.uk:443:100.123.74.6 https://ntfy.alexanderpezarro.uk/v1/health   # healthy
+curl --resolve ntfy.alexanderpezarro.uk:443:100.123.74.6 -d hi https://ntfy.alexanderpezarro.uk/upTEST  # 200
+curl --resolve ntfy.alexanderpezarro.uk:443:100.123.74.6 https://ntfy.alexanderpezarro.uk/upTEST/json     # 403
+curl --resolve ntfy.alexanderpezarro.uk:443:100.123.74.6 -d hi https://ntfy.alexanderpezarro.uk/other     # 403
+```
+
+### 5.7 Phone setup
+
+1. Install the ntfy app (F-Droid or Play). Set the default server to `https://ntfy.alexanderpezarro.uk`
+   and sign in as `phone`. Allow it to run unrestricted in the background (battery optimisation off).
+2. Install the new Jeeves build. Settings > Push should show "On (ntfy)". Tapping it registers again.
+
+### 5.8 Manual checks
+
+- Force-stop Jeeves, send a chat message from the web UI: the notification arrives within seconds.
+- Turn Tailscale off and send a message: nothing arrives until the next poll. Turn it back on: the ntfy
+  cache delivers it, and it is not shown twice.
+- Uninstall ntfy: the server drops the endpoint on the next 404/410.
+- Large plans (over about 3 KB of JSON) are pushed as `{message_id, truncated}` and the app fetches the
+  full message.

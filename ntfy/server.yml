@@ -1,0 +1,19 @@
+# ntfy: the self-hosted UnifiedPush distributor for the Jeeves app. No secrets in this file.
+# Reached only over Tailscale, through Caddy (see docs/deploy.md, "Push (ntfy + UnifiedPush)").
+base-url: https://ntfy.alexanderpezarro.uk
+behind-proxy: true
+
+# Everything is denied unless an ACL allows it (see the commands in docs/deploy.md):
+#   anonymous: write-only on up* (the Jeeves server posts here without credentials)
+#   user "phone": read-write on up* (the ntfy Android app subscribes as this user)
+auth-file: /var/lib/ntfy/user.db
+auth-default-access: deny-all
+enable-signup: false
+enable-login: true
+
+# Keep pushes while the phone is off Tailscale, so they arrive when it is back (default 12h).
+cache-file: /var/cache/ntfy/cache.db
+cache-duration: 12h
+
+# No web app: only the API and UnifiedPush endpoints.
+web-root: disable

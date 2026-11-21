@@ -113,12 +113,24 @@ CREATE INDEX IF NOT EXISTS events_time ON events (received_at);
 const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["jobs", "cancelled_at", "TEXT"],
   ["runs", "workflow_run_id", "INTEGER"],
+  ["devices", "push_endpoint", "TEXT"],
+  ["devices", "push_p256dh", "TEXT"],
+  ["devices", "push_auth", "TEXT"],
 ];
 
 export interface Device {
   id: number;
   name: string;
   fcm_token: string | null;
+  /** Web Push (UnifiedPush) endpoint, or null when the device hasn't registered one. */
+  push_endpoint: string | null;
+}
+
+export interface WebPushSubscription {
+  device_id: number;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
 }
 
 export interface EventRow {
@@ -254,11 +266,11 @@ export class Db {
     const info = this.sql
       .prepare("INSERT INTO devices (name, token_hash, created_at) VALUES (?, ?, ?)")
       .run(name, hash(token), now.toISOString());
-    return { device: { id: Number(info.lastInsertRowid), name, fcm_token: null }, token };
+    return { device: { id: Number(info.lastInsertRowid), name, fcm_token: null, push_endpoint: null }, token };
   }
 
   deviceByToken(token: string): Device | undefined {
-    return this.sql.prepare("SELECT id, name, fcm_token FROM devices WHERE token_hash = ?").get(hash(token)) as
+    return this.sql.prepare("SELECT id, name, fcm_token, push_endpoint FROM devices WHERE token_hash = ?").get(hash(token)) as
       | Device
       | undefined;
   }
@@ -271,6 +283,28 @@ export class Db {
     return (this.sql.prepare("SELECT fcm_token FROM devices WHERE fcm_token IS NOT NULL").all() as { fcm_token: string }[]).map(
       (r) => r.fcm_token,
     );
+  }
+
+  setWebPush(deviceId: number, sub: { endpoint: string; p256dh: string; auth: string } | null): void {
+    this.sql
+      .prepare("UPDATE devices SET push_endpoint = ?, push_p256dh = ?, push_auth = ? WHERE id = ?")
+      .run(sub?.endpoint ?? null, sub?.p256dh ?? null, sub?.auth ?? null, deviceId);
+  }
+
+  webPushSubscriptions(): WebPushSubscription[] {
+    return this.sql
+      .prepare(
+        "SELECT id AS device_id, push_endpoint AS endpoint, push_p256dh AS p256dh, push_auth AS auth FROM devices " +
+          "WHERE push_endpoint IS NOT NULL AND push_p256dh IS NOT NULL AND push_auth IS NOT NULL",
+      )
+      .all() as WebPushSubscription[];
+  }
+
+  /** Called when the push service says the subscription is gone (404/410). */
+  clearWebPushByEndpoint(endpoint: string): void {
+    this.sql
+      .prepare("UPDATE devices SET push_endpoint = NULL, push_p256dh = NULL, push_auth = NULL WHERE push_endpoint = ?")
+      .run(endpoint);
   }
 
   // Events ----------------------------------------------------------------

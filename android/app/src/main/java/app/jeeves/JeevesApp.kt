@@ -13,5 +13,6 @@ class JeevesApp : Application() {
     fun startBackground() {
         WifiTrigger.register(this)
         Work.schedulePeriodic(this)
+        Push.ensureRegistered(this)
     }
 }
