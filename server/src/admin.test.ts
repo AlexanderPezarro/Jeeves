@@ -89,6 +89,69 @@ describe("web UI auth", () => {
   });
 });
 
+describe("embedded web UI (/app)", () => {
+  function embeddedSetup() {
+    const web = mkdtempSync(join(tmpdir(), "jeeves-web-"));
+    writeFileSync(join(web, "index.html"), "<!doctype html><html><head><title>Jeeves</title></head></html>");
+    return adminSetup(undefined, web);
+  }
+  const cookieOf = (res: { headers: Record<string, unknown> }) => String(res.headers["set-cookie"]).split(";")[0];
+
+  it("swaps a device's link token for a cookie that reaches /app/api, and nothing else", async () => {
+    const s = embeddedSetup();
+    const headers = await pair(s.app);
+    expect((await s.app.inject({ method: "POST", url: "/app/session" })).statusCode).toBe(401);
+    const session = await s.app.inject({ method: "POST", url: "/app/session", headers, payload: { path: "workflows/arrive-home" } });
+    expect(session.statusCode).toBe(200);
+    const { url } = session.json();
+    expect(url).toMatch(/^\/app\/workflows\/arrive-home\?t=/);
+
+    const open = await s.app.inject({ method: "GET", url });
+    expect(open.statusCode).toBe(302);
+    expect(open.headers.location).toBe("/app/workflows/arrive-home");
+    expect(String(open.headers["set-cookie"])).toMatch(/Path=\/app\/; .*HttpOnly; SameSite=Strict/);
+    const cookie = cookieOf(open);
+
+    const list = await s.app.inject({ method: "GET", url: "/app/api/workflows", headers: { cookie } });
+    expect(list.statusCode).toBe(200);
+    expect(list.json().workflows.map((w: { id: string }) => w.id)).toContain("arrive-home");
+    expect((await s.app.inject({ method: "GET", url: "/app/api/me", headers: { cookie } })).json()).toEqual({ identity: { kind: "device", name: "Pixel" } });
+
+    // Without the cookie, or with it on the admin scope or as a bearer: refused.
+    expect((await s.app.inject({ method: "GET", url: "/app/api/workflows" })).statusCode).toBe(401);
+    expect((await s.app.inject({ method: "GET", url: "/admin/api/workflows", headers: { cookie }, remoteAddress: CADDY })).statusCode).toBe(401);
+    // The device bearer does not work on /app/api either: only the cookie does.
+    expect((await s.app.inject({ method: "GET", url: "/app/api/workflows", headers })).statusCode).toBe(401);
+    s.store!.close();
+  });
+
+  it("serves index.html with a <base> and the mount for /app and /admin", async () => {
+    const s = embeddedSetup();
+    const app = (await s.app.inject({ method: "GET", url: "/app/workflows/x" })).body;
+    expect(app).toContain('<base href="/app/" />');
+    expect(app).toContain('window.__JEEVES__ = {"base":"/app/","embedded":true}');
+    const admin = (await s.app.inject({ method: "GET", url: "/admin/" })).body;
+    expect(admin).toContain('<base href="/admin/" />');
+    expect(admin).toContain('"embedded":false');
+    s.store!.close();
+  });
+
+  it("refuses bad link tokens and paths", async () => {
+    const s = embeddedSetup();
+    const headers = await pair(s.app);
+    expect((await s.app.inject({ method: "POST", url: "/app/session", headers, payload: { path: "../admin" } })).statusCode).toBe(400);
+    expect((await s.app.inject({ method: "POST", url: "/app/session", headers, payload: { path: "https://evil.example" } })).statusCode).toBe(400);
+    const bad = await s.app.inject({ method: "GET", url: "/app/workflows?t=device:1.9999999999999.forged" });
+    expect(bad.statusCode).toBe(302);
+    expect(bad.headers["set-cookie"]).toBeUndefined();
+    // A link expires after two minutes.
+    const { url } = (await s.app.inject({ method: "POST", url: "/app/session", headers, payload: {} })).json();
+    s.clock.now = new Date(s.clock.now.getTime() + 3 * 60_000);
+    expect((await s.app.inject({ method: "GET", url })).headers["set-cookie"]).toBeUndefined();
+    s.store!.close();
+  });
+});
+
 describe("peerMatcher", () => {
   it("matches CIDRs, single addresses and IPv4-mapped IPv6", () => {
     const m = peerMatcher({ trust: true, trustedProxies: ["172.18.0.0/16", "10.0.0.7", "fd00::/8"] });

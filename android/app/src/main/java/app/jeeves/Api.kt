@@ -260,6 +260,8 @@ data class PluginSettings(
     val schema: JsonObject? = null,
 )
 
+@Serializable data class AppSession(val url: String, val expires_at: String? = null)
+
 @Serializable data class PluginUiToken(val token: String, val url: String, val expires_at: String? = null)
 
 /** One validation problem from a 400 response. `path` is a list of keys, e.g. ["values", "list_name"]. */
@@ -458,6 +460,12 @@ class Api(private val prefs: Prefs) {
 
     suspend fun pluginUiToken(name: String): PluginUiToken =
         json.decodeFromString(call("POST", "/plugins/${enc(name)}/ui-token"))
+
+    // --- Embedded editor ---
+
+    /** A short-lived link that opens the web UI inside the app at [path], e.g. "workflows/arrive-home". */
+    suspend fun editorSession(path: String): AppSession =
+        json.decodeFromString(call("POST", "/app/session", buildJsonObject { put("path", path) }))
 
     companion object {
         private val client = OkHttpClient.Builder()

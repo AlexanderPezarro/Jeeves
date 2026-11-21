@@ -17,7 +17,7 @@ Android app ──events──▶ server (workflows, scheduler, Claude) ──MC
 | [`server/`](server) | Control plane: event API, workflow engine, job scheduler, plugin host, Claude runs. TypeScript, Fastify, SQLite. |
 | [`config.example/`](config.example) | Template for the live `config/` directory: globals and one file per workflow. |
 | [`plugins/todo/`](plugins/todo) | To-do plugin: chores, recurrence, completion and timer steps, exposed as MCP tools. |
-| [`web/`](web) | Web admin UI (Vite, React) served by the server at `/admin`: dashboard, workflow editor, activity, plugins, settings. |
+| [`web/`](web) | Web UI (Vite, React): dashboard, workflow editor, activity, plugins, settings. Served at `/admin` (browser, behind Authelia) and at `/app` (the phone app's built-in workflow editor). |
 | [`android/`](android) | Native Android app (Kotlin, Jetpack Compose): Today list, chat with Jeeves, activity, workflows, plugin settings, Wi-Fi trigger, notifications. |
 
 ## How it works
@@ -140,6 +140,14 @@ to sit behind Caddy and Authelia: see [docs/deploy.md](docs/deploy.md) for the p
   instead of sending them and only calls read-only tools.
 
 The web UI and the app's Activity tab are built on these.
+
+## Editing workflows from the phone
+
+The app's Workflows screen opens the same editor the web UI uses, in a WebView: "New workflow",
+or "Edit" on a workflow. The app asks `POST /app/session` (device token) for a two-minute link to
+`/app/<path>?t=…`; opening it swaps the token for an HttpOnly cookie scoped to `/app/` (8 hours)
+and the editor talks to `/app/api/*`, the same routes the device token reaches. `/app` needs no
+Authelia rule: without the cookie its API answers 401.
 
 ## The Android app
 

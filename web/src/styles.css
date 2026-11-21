@@ -787,4 +787,24 @@ details.when[open] > summary {
   .step-id {
     width: 9rem;
   }
+  /* Phone width (the app's embedded editor): drop Steps and Last run, stack the row buttons. */
+  .workflows-table th:nth-child(4),
+  .workflows-table td:nth-child(4),
+  .workflows-table th:nth-child(5),
+  .workflows-table td:nth-child(5) {
+    display: none;
+  }
+  .workflows-table td.actions {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.3rem;
+  }
+  .workflows-table td.actions > * + * {
+    margin-left: 0;
+  }
+}
+
+main.embedded {
+  padding-top: 0.6rem;
 }

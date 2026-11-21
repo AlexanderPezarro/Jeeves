@@ -10,8 +10,9 @@ import { defineConfig } from "vite";
 const target = process.env.JEEVES_DEV_TARGET ?? "http://localhost:8080";
 const devUser = process.env.JEEVES_DEV_USER ?? "dev";
 
-export default defineConfig({
-  base: "/admin/",
+export default defineConfig(({ command }) => ({
+  // Built with relative URLs so one build serves /admin/ and the app's /app/; the server adds a <base>.
+  base: command === "build" ? "./" : "/admin/",
   plugins: [react()],
   build: { outDir: "dist", emptyOutDir: true, sourcemap: false },
   server: {
@@ -25,4 +26,4 @@ export default defineConfig({
       },
     },
   },
-});
+}));

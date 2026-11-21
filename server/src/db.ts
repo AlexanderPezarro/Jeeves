@@ -313,6 +313,10 @@ export class Db {
       | undefined;
   }
 
+  deviceById(id: number): Device | undefined {
+    return this.sql.prepare("SELECT id, name, fcm_token, push_endpoint FROM devices WHERE id = ?").get(id) as Device | undefined;
+  }
+
   setPushToken(deviceId: number, fcmToken: string | null): void {
     this.sql.prepare("UPDATE devices SET fcm_token = ? WHERE id = ?").run(fcmToken, deviceId);
   }

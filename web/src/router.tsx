@@ -1,7 +1,8 @@
 import { useEffect, useState, type AnchorHTMLAttributes, type MouseEvent } from "react";
+import { BASE_PATH } from "./env";
 
-/** A tiny history router under Vite's base ("/admin/"). Paths here are relative to it, e.g. "/workflows/x". */
-const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
+/** A tiny history router under the mount ("/admin/" or "/app/"). Paths here are relative to it, e.g. "/workflows/x". */
+const BASE = BASE_PATH.replace(/\/$/, "");
 
 function current(): string {
   const p = window.location.pathname;

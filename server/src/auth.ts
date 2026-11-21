@@ -56,15 +56,20 @@ export class UiTokens {
   }
 
   verify(token: string | undefined, plugin: string, now = new Date()): boolean {
-    if (!token) return false;
+    return this.subject(token, now) === plugin;
+  }
+
+  /** The name a valid, unexpired token was minted for, else null. */
+  subject(token: string | undefined, now = new Date()): string | null {
+    if (!token) return null;
     const i = token.lastIndexOf(".");
-    if (i < 0) return false;
+    if (i < 0) return null;
     const body = token.slice(0, i);
     const sig = Buffer.from(token.slice(i + 1));
     const want = Buffer.from(this.sign(body));
-    if (sig.length !== want.length || !timingSafeEqual(sig, want)) return false;
+    if (sig.length !== want.length || !timingSafeEqual(sig, want)) return null;
     const [name, exp] = [body.slice(0, body.lastIndexOf(".")), Number(body.slice(body.lastIndexOf(".") + 1))];
-    return name === plugin && Number.isFinite(exp) && exp > now.getTime();
+    return Number.isFinite(exp) && exp > now.getTime() ? name : null;
   }
 
   private sign(body: string) {
