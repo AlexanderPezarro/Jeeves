@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { ZodError } from "zod";
+import type { ReminderScheduler } from "./reminders.js";
 import { choreSchema, seedFromFile, slugify } from "./seed.js";
 import { settingsJsonSchema } from "./settings.js";
 import { ChoreExistsError, type Chore, type TodoStore } from "./store.js";
@@ -12,6 +13,8 @@ export interface JeevesRoutesOptions {
   token: string;
   /** chores.yaml used by the "Import from chores.yaml" button. */
   choresFile?: string;
+  /** Re-synced after settings and chore changes. */
+  reminders?: ReminderScheduler;
 }
 
 export const UI_PATH = "/jeeves/ui";
@@ -39,7 +42,7 @@ function badRequest(reply: FastifyReply, e: ZodError) {
  * Everything Jeeves talks to besides MCP: the manifest, settings, and the chore manager UI with its
  * JSON API. Registered under /jeeves and guarded by the same bearer token as /mcp.
  */
-export async function jeevesRoutes(app: FastifyInstance, { store, token, choresFile }: JeevesRoutesOptions) {
+export async function jeevesRoutes(app: FastifyInstance, { store, token, choresFile, reminders }: JeevesRoutesOptions) {
   app.addHook("onRequest", async (req, reply) => {
     if (req.headers.authorization !== `Bearer ${token}`) {
       return reply.code(401).send({ error: "unauthorized" });
@@ -51,7 +54,9 @@ export async function jeevesRoutes(app: FastifyInstance, { store, token, choresF
   app.get("/settings", async () => store.settings());
   app.put("/settings", async (req, reply) => {
     try {
-      return { ok: true, values: store.setSettings(req.body ?? {}) };
+      const values = store.setSettings(req.body ?? {});
+      await reminders?.sync();
+      return { ok: true, values };
     } catch (e) {
       if (e instanceof ZodError) return badRequest(reply, e);
       throw e;
@@ -71,7 +76,9 @@ export async function jeevesRoutes(app: FastifyInstance, { store, token, choresF
     const parsed = choreSchema.safeParse(withId);
     if (!parsed.success) return badRequest(reply, parsed.error);
     try {
-      return reply.code(201).send({ chore: store.createChore(parsed.data as Chore) });
+      const chore = store.createChore(parsed.data as Chore);
+      await reminders?.sync();
+      return reply.code(201).send({ chore });
     } catch (e) {
       if (e instanceof ChoreExistsError) return reply.code(409).send({ error: e.message });
       throw e;
@@ -88,12 +95,14 @@ export async function jeevesRoutes(app: FastifyInstance, { store, token, choresF
     if (!parsed.success) return badRequest(reply, parsed.error);
     const chore = store.updateChore(parsed.data as Chore);
     if (!chore) return reply.code(404).send({ error: `No chore with id ${id}` });
+    await reminders?.sync();
     return { chore };
   };
 
   const deleteChore = async (req: FastifyRequest<IdParams>, reply: FastifyReply) => {
     const { id } = req.params;
     if (!store.deleteChore(id)) return reply.code(404).send({ error: `No chore with id ${id}` });
+    await reminders?.sync();
     return { ok: true };
   };
 
@@ -102,7 +111,9 @@ export async function jeevesRoutes(app: FastifyInstance, { store, token, choresF
       return reply.code(404).send({ error: `No chores file at ${choresFile ?? "(not configured)"}` });
     }
     try {
-      return seedFromFile(store, choresFile);
+      const result = seedFromFile(store, choresFile);
+      await reminders?.sync();
+      return result;
     } catch (e) {
       if (e instanceof ZodError) return badRequest(reply, e);
       return reply.code(400).send({ error: `Could not read ${choresFile}: ${(e as Error).message}` });

@@ -24,6 +24,21 @@ afterEach(async () => {
   while (closers.length) await closers.pop()!();
 });
 
+const DEFAULTS = {
+  carry_over_days: 3,
+  default_snooze_minutes: 15,
+  followup_nudges: true,
+  emit_events: true,
+  daily_due_enabled: true,
+  daily_due_time: "09:00",
+  daily_due_level: "notify",
+  evening_update_enabled: true,
+  evening_update_time: "21:00",
+  evening_update_level: "notify",
+  timer_level: "alarm",
+  chore_default_level: "notify",
+};
+
 const newChore = {
   name: "Water the plants",
   recurrence: { every: "week", on: ["wed"] },
@@ -48,7 +63,20 @@ describe("/jeeves manifest and auth", () => {
       settings_schema: { type: "object" },
     });
     expect(Object.keys(m.settings_schema.properties).sort()).toEqual(
-      ["carry_over_days", "default_snooze_minutes", "emit_events", "followup_nudges"].sort(),
+      [
+        "carry_over_days",
+        "default_snooze_minutes",
+        "emit_events",
+        "followup_nudges",
+        "daily_due_enabled",
+        "daily_due_time",
+        "daily_due_level",
+        "evening_update_enabled",
+        "evening_update_time",
+        "evening_update_level",
+        "timer_level",
+        "chore_default_level",
+      ].sort(),
     );
     for (const p of Object.values(m.settings_schema.properties) as Record<string, unknown>[]) {
       expect(["string", "number", "integer", "boolean"]).toContain(p.type);
@@ -95,18 +123,13 @@ describe("/jeeves/settings", () => {
     expect(overdueRun()).toBe(true);
 
     let res = await app.inject({ method: "GET", url: "/jeeves/settings", headers: auth });
-    expect(res.json()).toEqual({
-      carry_over_days: 3,
-      default_snooze_minutes: 15,
-      followup_nudges: true,
-      emit_events: true,
-    });
+    expect(res.json()).toEqual(DEFAULTS);
 
     res = await app.inject({ method: "PUT", url: "/jeeves/settings", headers: auth, payload: { carry_over_days: 1 } });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({
       ok: true,
-      values: { carry_over_days: 1, default_snooze_minutes: 15, followup_nudges: true, emit_events: true },
+      values: { ...DEFAULTS, carry_over_days: 1 },
     });
     expect(overdueRun()).toBe(false);
 
@@ -129,6 +152,9 @@ describe("/jeeves/settings", () => {
     [{ default_snooze_minutes: 0 }],
     [{ followup_nudges: "yes" }],
     [{ surprise: true }],
+    [{ daily_due_time: "25:00" }],
+    [{ evening_update_time: "9:00" }],
+    [{ timer_level: "siren" }],
   ])("rejects %j with 400 and keeps the old values", async (payload) => {
     const { app, store } = setup();
     const res = await app.inject({ method: "PUT", url: "/jeeves/settings", headers: auth, payload });
