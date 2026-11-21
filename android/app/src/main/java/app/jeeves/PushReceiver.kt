@@ -1,6 +1,7 @@
 package app.jeeves
 
 import android.util.Log
+import java.time.Instant
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -54,6 +55,11 @@ class PushReceiver : PushService() {
             } catch (_: Exception) {
                 null
             }
+            val commandId = obj?.get("command_id")?.jsonPrimitive?.contentOrNull?.toLongOrNull()
+            if (obj != null && commandId != null) {
+                handleCommand(prefs, obj, commandId)
+                return@launch
+            }
             val id = obj?.get("message_id")?.jsonPrimitive?.contentOrNull?.toLongOrNull()
             try {
                 val text = obj?.get("text")?.jsonPrimitive?.contentOrNull
@@ -75,6 +81,27 @@ class PushReceiver : PushService() {
                 // The 15-minute poll is the safety net.
                 Log.w(TAG, "Handling a push message failed", e)
             }
+        }
+    }
+
+    /** Runs a workflow `phone` step's command and reports the outcome; a late command is dropped. */
+    private suspend fun handleCommand(prefs: Prefs, obj: JsonObject, commandId: Long) {
+        val expiresAt = obj["expires_at"]?.jsonPrimitive?.contentOrNull
+        if (expiresAt == null || PhoneActions.isExpired(expiresAt, Instant.now())) {
+            Log.w(TAG, "Dropping expired phone command $commandId")
+            return
+        }
+        var error: String? = null
+        try {
+            val cmd = PhoneActions.parse(obj["phone"]!!.jsonObject)
+            error = PhoneActions.execute(applicationContext, cmd).exceptionOrNull()?.let { it.message ?: it.toString() }
+        } catch (e: Exception) {
+            error = e.message ?: "invalid phone command"
+        }
+        try {
+            Api(prefs).phoneCommandResult(commandId, error == null, error)
+        } catch (e: Exception) {
+            Log.w(TAG, "Reporting phone command $commandId failed", e)
         }
     }
 

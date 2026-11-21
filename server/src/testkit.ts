@@ -11,7 +11,7 @@ import { Agent, type CreateMessage } from "./agent.js";
 import { buildApp } from "./app.js";
 import { staticConfig, type ConfigSource, type WorkflowInput } from "./config.js";
 import { ConfigStore } from "./configstore.js";
-import { Db, type MessageRow } from "./db.js";
+import { Db, type MessageRow, type PhoneCommandRow } from "./db.js";
 import { Engine } from "./engine.js";
 import type { Notifier } from "./notify.js";
 import type { PluginHost, PluginTool, ToolResult } from "./plugins.js";
@@ -87,8 +87,15 @@ export class FakeTodo implements PluginHost {
 
 export class RecordingNotifier implements Notifier {
   sent: MessageRow[] = [];
+  commands: PhoneCommandRow[] = [];
+  /** How many devices a command "reaches"; 0 simulates no push set up. */
+  devices = 1;
   async notify(m: MessageRow) {
     this.sent.push(m);
+  }
+  async command(row: PhoneCommandRow) {
+    this.commands.push(row);
+    return this.devices;
   }
 }
 

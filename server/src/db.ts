@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import Database from "better-sqlite3";
+import type { PhoneAction } from "./config.js";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS devices (
@@ -86,6 +87,16 @@ CREATE TABLE IF NOT EXISTS step_runs (
   error TEXT
 );
 CREATE INDEX IF NOT EXISTS step_runs_run ON step_runs (workflow_run_id);
+CREATE TABLE IF NOT EXISTS phone_commands (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  workflow_run_id INTEGER NOT NULL,
+  step_run_id INTEGER NOT NULL,
+  payload TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  status TEXT NOT NULL,
+  result TEXT
+);
 CREATE TABLE IF NOT EXISTS evaluations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL,
@@ -297,6 +308,17 @@ function toStepRun(r: Record<string, unknown>): StepRunRow {
     output: parseJson(r.output),
     warnings: (parseJson(r.warnings) as string[] | null) ?? [],
   };
+}
+
+export interface PhoneCommandRow {
+  id: number;
+  workflow_run_id: number;
+  step_run_id: number;
+  payload: PhoneAction;
+  created_at: string;
+  expires_at: string;
+  status: "pending" | "ok" | "failed" | "expired";
+  result: { ok?: boolean; error?: string; device_id?: number } | null;
 }
 
 export class Db {
@@ -684,6 +706,7 @@ export class Db {
       out.step_runs = this.sql
         .prepare("DELETE FROM step_runs WHERE workflow_run_id IN (SELECT id FROM workflow_runs WHERE finished_at IS NOT NULL AND finished_at < ?)")
         .run(cutoff).changes;
+      out.phone_commands = this.sql.prepare("DELETE FROM phone_commands WHERE created_at < ?").run(cutoff).changes;
       out.workflow_runs = this.sql.prepare("DELETE FROM workflow_runs WHERE finished_at IS NOT NULL AND finished_at < ?").run(cutoff).changes;
       out.events = this.sql
         .prepare(
@@ -698,6 +721,28 @@ export class Db {
       out.jobs = this.sql.prepare("DELETE FROM jobs WHERE (done_at IS NOT NULL OR cancelled_at IS NOT NULL) AND run_at < ?").run(cutoff).changes;
       return out;
     })();
+  }
+
+  // Phone commands ------------------------------------------------------------
+
+  addPhoneCommand(c: { workflow_run_id: number; step_run_id: number; payload: PhoneAction }, now: Date, ttlMs: number): PhoneCommandRow {
+    const id = this.sql
+      .prepare("INSERT INTO phone_commands (workflow_run_id, step_run_id, payload, created_at, expires_at, status) VALUES (?, ?, ?, ?, ?, 'pending')")
+      .run(c.workflow_run_id, c.step_run_id, JSON.stringify(c.payload), now.toISOString(), new Date(now.getTime() + ttlMs).toISOString()).lastInsertRowid;
+    return this.getPhoneCommand(Number(id))!;
+  }
+
+  getPhoneCommand(id: number): PhoneCommandRow | undefined {
+    const r = this.sql.prepare("SELECT * FROM phone_commands WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+    if (!r) return undefined;
+    return { ...r, payload: JSON.parse(r.payload as string), result: r.result ? JSON.parse(r.result as string) : null } as PhoneCommandRow;
+  }
+
+  /** Atomic: only a still-pending command changes, so the first reply wins and a late one is ignored. */
+  settlePhoneCommand(id: number, status: "ok" | "failed" | "expired", result: unknown): boolean {
+    return (
+      this.sql.prepare("UPDATE phone_commands SET status = ?, result = ? WHERE id = ? AND status = 'pending'").run(status, JSON.stringify(result ?? null), id).changes > 0
+    );
   }
 
   // Messages ----------------------------------------------------------------
