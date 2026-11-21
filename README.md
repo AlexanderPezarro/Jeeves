@@ -4,7 +4,7 @@ Jeeves helps you get through chores and goals with less effort. Your phone tells
 host when something happens (you got home, you tapped "Plan my evening"). The server decides
 whether that matters, and if it does, asks Claude to look at what's due and send you a short to-do
 list, easiest first, with steps for each item. You tick things off from the notification or by
-replying in plain English, and timed chores like laundry nudge you when the cycle is done.
+replying in plain English, and a workflow can keep nagging until you act, which is how laundry works.
 
 ```
 Android app ──events──▶ server (workflows, scheduler, Claude) ──MCP──▶ to-do plugin
@@ -16,7 +16,7 @@ Android app ──events──▶ server (workflows, scheduler, Claude) ──MC
 | --- | --- |
 | [`server/`](server) | Control plane: event API, workflow engine, job scheduler, plugin host, Claude runs. TypeScript, Fastify, SQLite. |
 | [`config.example/`](config.example) | Template for the live `config/` directory: globals and one file per workflow. |
-| [`plugins/todo/`](plugins/todo) | To-do plugin: chores, recurrence, completion and timer steps, exposed as MCP tools. |
+| [`plugins/todo/`](plugins/todo) | To-do plugin: chores, recurrence and completion, exposed as MCP tools. |
 | [`web/`](web) | Web UI (Vite, React): dashboard, workflow editor, activity, plugins, settings. Served at `/admin` (browser, behind Authelia) and at `/app` (the phone app's built-in workflow editor). |
 | [`android/`](android) | Native Android app (Kotlin, Jetpack Compose): Today list, chat with Jeeves, activity, workflows, plugin settings, Wi-Fi trigger, notifications. |
 
@@ -34,9 +34,9 @@ Android app ──events──▶ server (workflows, scheduler, Claude) ──MC
    step can call the plugins' tools (`todo__list_due_tasks`, `todo__complete_task`, …) plus two
    built-ins: `send_message` and `schedule_followup`. Only messages reach your phone.
 4. **Completion.** Tap the plugin's buttons (the to-do plugin's Start/Done/Skip) on a notification or in the Today list, or reply in the chat (a `message.received` event, see below)
-   ("dishes done, laundry is in"). Starting a timed chore schedules a reminder for each of its timer steps
-   (at the todo plugin's `timer_level`), and completing or skipping it cancels them. So a workflow
-   shouldn't also wait and nudge for the same timer.
+   ("dishes done, laundry is in"). Timing is the workflow's job, not the plugin's: see
+   [`config.example/workflows/laundry.yaml`](config.example/workflows/laundry.yaml) for "wait, then
+   nag until I tap Start, wait again, then nag until I tap Done".
 
 Every workflow run and each of its steps is logged in the server's database, and every Claude run
 with its input, transcript and token counts (`GET /runs`). `max_runs_per_day` caps spend.
@@ -68,10 +68,21 @@ steps:
 
 Step types: `call: {plugin, tool, args}`, `claude: {prompt, tools?, model?, effort?, history?}`
 (`tools` is an allowlist; `model`/`effort` override the globals for that step; `history: true`
-adds the last 8 chat messages), `message: {text, items?}`, `wait`,
+adds the last 8 chat messages),
+`message: {text, items?, level?, repeat?: {every_minutes, max?}, until?: {event, conditions?}}`
+(`level` is notify, loud or alarm; with `until` the run pauses after sending until that event
+arrives, and `repeat` re-sends every N minutes meanwhile, ending the run as `stopped` one interval
+after the `max`-th send; `repeat` needs `until`), `wait`,
 `if: <condition> then: [...] else: [...]`, `stop: {reason?}`.
 Conditions are `{path, eq|ne|gt|gte|lt|lte|contains|exists}` or `{all: [...]}` / `{any: [...]}`.
 Templates only know `{{event.<field>}}` and `{{steps.<id>.<field>}}`.
+
+A workflow can also list `cancel_on: [{event, conditions?}]`: while the run is paused (a `wait` or a
+repeating message), a matching event ends it as `cancelled`. Conditions on `until` and `cancel_on`
+check `event.*`, and their values may be templates such as `{{steps.task.id}}`, filled in when the
+run pauses. Only one real run of a workflow can be paused at a time; another trigger meanwhile
+shows "already waiting" in the activity feed. Resolving the item a repeating message is about
+(Done or Skip on its notification) also ends the run.
 
 **Chat is a workflow too.** What you write in the app's chat arrives as a `message.received`
 event (`{{event.text}}`), answered by `workflows/chat-reply.yaml` (created on first start if no
@@ -148,7 +159,7 @@ describes them:
   to the plugin's `POST /jeeves/actions`. If the plugin answers `resolved: true`, pending follow-ups
   about that item are cancelled.
 
-The to-do plugin uses this for its settings (carry-over days, default snooze, timer follow-ups,
+The to-do plugin uses this for its settings (carry-over days, default snooze,
 events on or off), a **Chores** page for adding, editing and deleting chores, the
 `todo.task_started` / `todo.task_completed` events it posts back to Jeeves (`JEEVES_URL`), a
 **Today** view with Start/Done/Skip on each task, and Done / Snooze 15 min / Skip on notifications.

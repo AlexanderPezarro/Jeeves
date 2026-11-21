@@ -89,11 +89,11 @@ export const manifest = {
   ].join("\n"),
   // Lists the app shows (GET /jeeves/views/<id>); each item carries its own buttons.
   views: [{ id: "today", title: "Today", empty_text: "Nothing due. Enjoy your evening." }],
-  // Buttons on notifications about one of this plugin's items (POST /jeeves/actions).
+  // Buttons on notifications about one of this plugin's items (POST /jeeves/actions). Jeeves and the app take at most
+  // three, so Snooze (still accepted by /actions) gave way to Start.
   item_actions: [
     { id: "start", label: "Start", style: "secondary" },
     { id: "done", label: "Done", style: "primary" },
-    { id: "snooze", label: "Snooze 15 min", args: { minutes: 15 } },
     { id: "skip", label: "Skip", style: "text" },
   ],
 };

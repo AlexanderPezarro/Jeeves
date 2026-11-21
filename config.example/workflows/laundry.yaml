@@ -1,0 +1,49 @@
+# Laundry on laundry days: all the timing lives here, none in the todo plugin.
+#
+# I get home, wait 20 minutes (the run is cancelled if I leave first), then an alarm repeats until I
+# tap Start on the chore. 140 minutes later another alarm repeats until I tap Done.
+#
+# cancel_on covers the whole run, so leaving home during the 140 minute cycle also cancels the
+# "Hang up" alarm. Only one run of this workflow is active at a time: a second arrival while it
+# is paused shows "already waiting".
+id: laundry
+description: Laundry on laundry days when I get home
+cooldown: 0
+triggers:
+  - event: wifi.connected
+    when: { ssid: MyHomeWiFi }
+cancel_on:
+  - event: wifi.disconnected
+    conditions: [{ path: event.ssid, eq: MyHomeWiFi }]
+  - event: todo.task_skipped
+    conditions: [{ path: event.task_id, eq: "{{steps.task.id}}" }]
+steps:
+  - id: task
+    call: { plugin: todo, tool: get_task, args: { chore_id: laundry } }
+  - id: due
+    if: { path: steps.task.state, ne: pending }
+    then:
+      - id: not-today
+        stop: { reason: No pending laundry today }
+  - id: settle
+    wait: { minutes: 20 }
+  - id: put-on
+    message:
+      text: Put a wash on
+      level: alarm
+      items: [{ plugin: todo, item_id: "{{steps.task.id}}", title: "{{steps.task.name}}" }]
+      repeat: { every_minutes: 10, max: 6 }
+      until:
+        event: todo.task_started
+        conditions: [{ path: event.task_id, eq: "{{steps.task.id}}" }]
+  - id: cycle
+    wait: { minutes: 140 }
+  - id: hang-up
+    message:
+      text: Hang up the washing
+      level: alarm
+      items: [{ plugin: todo, item_id: "{{steps.task.id}}", title: "{{steps.task.name}}" }]
+      repeat: { every_minutes: 10, max: 6 }
+      until:
+        event: todo.task_completed
+        conditions: [{ path: event.task_id, eq: "{{steps.task.id}}" }]
