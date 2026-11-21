@@ -74,6 +74,7 @@ describe("web UI auth", () => {
     writeFileSync(join(web, "index.html"), "<!doctype html><title>Jeeves</title>");
     writeFileSync(join(web, "assets", "app.js"), "console.log(1)");
     const s = adminSetup(undefined, web);
+    expect((await s.app.inject({ method: "GET", url: "/" })).headers.location).toBe("/admin/");
     expect((await s.app.inject({ method: "GET", url: "/admin" })).headers.location).toBe("/admin/");
     expect((await s.app.inject({ method: "GET", url: "/admin/" })).body).toContain("<title>Jeeves</title>");
     expect((await s.app.inject({ method: "GET", url: "/admin/workflows/arrive-home" })).body).toContain("<title>Jeeves</title>");
