@@ -111,7 +111,7 @@ events on or off), a **Chores** page for adding, editing and deleting chores, an
 ## Running it on the homeserver
 
 ```bash
-cp .env.example .env                                   # API key, pairing code, plugin token
+cp .env.example .env                                   # Claude token (`claude setup-token`), pairing code, plugin token
 cp -r config.example config                           # set your home Wi-Fi name in config/workflows/arrive-home.yaml
 cp plugins/todo/chores.example.yaml plugins/todo/chores.yaml
 docker compose up -d --build
