@@ -2,7 +2,10 @@ package app.jeeves.ui
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -40,6 +43,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import app.jeeves.Api
+import app.jeeves.Notifications
 import app.jeeves.Prefs
 import app.jeeves.Push
 import app.jeeves.WifiTrigger
@@ -68,6 +72,11 @@ fun SettingsScreen(
         ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
 
     val requestPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        permissionsVersion++
+    }
+
+    // The system settings screens opened below don't return a result, but coming back should refresh the status lines.
+    val openSettings = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         permissionsVersion++
     }
 
@@ -193,6 +202,26 @@ fun SettingsScreen(
             granted(Manifest.permission.ACCESS_BACKGROUND_LOCATION),
             enabled = granted(Manifest.permission.ACCESS_FINE_LOCATION),
         ) { requestPermission.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION) }
+        PermissionRow(
+            "Full-screen alarms", Notifications.canUseFullScreenIntent(context),
+        ) {
+            // Only reachable on API 34+; below that the permission always reads as granted.
+            if (Build.VERSION.SDK_INT >= 34) {
+                openSettings.launch(
+                    Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, Uri.parse("package:${context.packageName}")),
+                )
+            }
+        }
+        OutlinedButton(
+            onClick = {
+                openSettings.launch(
+                    Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                        .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                        .putExtra(Settings.EXTRA_CHANNEL_ID, Notifications.CHANNEL_LOUD),
+                )
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("Loud reminders can bypass Do Not Disturb") }
         }
 
         status?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }

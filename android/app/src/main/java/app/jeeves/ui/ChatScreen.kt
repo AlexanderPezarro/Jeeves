@@ -133,6 +133,13 @@ private fun MessageBubble(m: ChatMessage, onDone: (PlanItem) -> Unit) {
             colors = if (mine) CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer) else CardDefaults.cardColors(),
         ) {
             Column(Modifier.padding(12.dp)) {
+                if (m.level != null) {
+                    Text(
+                        listOfNotNull("Reminder", m.level, m.due_at?.let { localTime(it) }).joinToString(" · "),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.outline,
+                    )
+                }
                 Text(m.text, style = MaterialTheme.typography.bodyLarge)
                 m.items.orEmpty().forEachIndexed { i, item ->
                     Text(

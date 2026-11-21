@@ -59,7 +59,11 @@ class PushReceiver : PushService() {
                 val text = obj?.get("text")?.jsonPrimitive?.contentOrNull
                 if (obj != null && id != null && text != null && obj["truncated"] == null) {
                     val items = obj["items"]?.let { json.decodeFromJsonElement(ListSerializer(PlanItem.serializer()), it) }
-                    Notifications.show(applicationContext, ChatMessage(id, "out", text, items, created_at = ""))
+                    Notifications.show(applicationContext, ChatMessage(
+                            id, "out", text, items, created_at = "",
+                            level = obj["level"]?.jsonPrimitive?.contentOrNull,
+                            due_at = obj["due_at"]?.jsonPrimitive?.contentOrNull,
+                        ))
                 } else {
                     // Truncated or unreadable: fetch the full messages from the server instead.
                     val after = if (id != null) id - 1 else prefs.lastMessageId

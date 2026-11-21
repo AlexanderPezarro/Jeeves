@@ -179,6 +179,7 @@ private fun UpcomingCard(item: UpcomingItem, onCancel: () -> Unit) {
                     "schedule" -> item.status?.let { StatusChip(it) }
                     "wait" -> StatusChip(if (item.dry_run) "wait (dry run)" else "wait")
                     "followup" -> StatusChip("follow-up")
+                    "reminder" -> StatusChip("reminder" + (item.level?.let { " · $it" } ?: ""))
                     else -> StatusChip(item.kind)
                 }
             }
@@ -195,9 +196,13 @@ private fun UpcomingCard(item: UpcomingItem, onCancel: () -> Unit) {
                     )
                 }
                 "followup" -> Text(item.message ?: "Follow-up", style = MaterialTheme.typography.bodyLarge)
+                "reminder" -> {
+                    Text(item.text ?: item.message ?: "Reminder", style = MaterialTheme.typography.bodyLarge)
+                    item.plugin?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline) }
+                }
                 else -> Text(item.workflow_id ?: item.message ?: "", style = MaterialTheme.typography.bodyMedium)
             }
-            if ((item.kind == "wait" || item.kind == "followup") && item.job_id != null) {
+            if ((item.kind == "wait" || item.kind == "followup" || item.kind == "reminder") && item.job_id != null) {
                 TextButton(onClick = onCancel) { Text("Cancel") }
             }
         }
