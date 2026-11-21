@@ -23,6 +23,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -39,7 +40,6 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import app.jeeves.Api
 import app.jeeves.Prefs
-import app.jeeves.Work
 import app.jeeves.WifiTrigger
 import kotlinx.coroutines.launch
 
@@ -56,7 +56,8 @@ fun SettingsScreen(
     var serverUrl by remember { mutableStateOf(prefs.serverUrl.ifBlank { "https://" }) }
     var code by remember { mutableStateOf("") }
     var deviceName by remember { mutableStateOf(Build.MODEL ?: "Phone") }
-    var homeSsid by remember { mutableStateOf(prefs.homeSsid) }
+    var networks by remember { mutableStateOf(prefs.wifiNetworks) }
+    var newSsid by remember { mutableStateOf("") }
     var status by remember { mutableStateOf<String?>(null) }
     // Bumped after a permission result so the status lines recompose.
     var permissionsVersion by remember { mutableIntStateOf(0) }
@@ -108,24 +109,48 @@ fun SettingsScreen(
         }
 
         HorizontalDivider()
-        Text("Home Wi-Fi", style = MaterialTheme.typography.titleMedium)
+        Text("Wi-Fi networks", style = MaterialTheme.typography.titleMedium)
         Text(
-            "Jeeves tells the server when you arrive home on this network.",
+            "Jeeves tells the server when you join or leave any of these networks, e.g. home or work.",
             style = MaterialTheme.typography.bodyMedium,
         )
-        OutlinedTextField(homeSsid, { homeSsid = it }, label = { Text("Wi-Fi name (SSID)") }, modifier = Modifier.fillMaxWidth())
-        OutlinedButton(onClick = {
-            val current = WifiTrigger.currentSsid(context)
-            if (current != null) homeSsid = current
-            else status = "Couldn't read the Wi-Fi name. Allow location access below, and make sure you're on Wi-Fi."
-        }) { Text("Use the current Wi-Fi") }
-        Button(onClick = {
-            prefs.homeSsid = homeSsid
-            // Treat "right now" as the starting state so saving at home doesn't fire an arrival.
-            prefs.onHomeWifi = WifiTrigger.currentSsid(context) == homeSsid
-            Work.checkWifi(context, delaySeconds = 0)
-            status = "Saved."
-        }) { Text("Save") }
+        fun save(list: List<String>, message: String) {
+            WifiTrigger.saveNetworks(context, prefs, list)
+            networks = prefs.wifiNetworks
+            status = message
+        }
+        fun add(name: String) {
+            val ssid = name.trim()
+            when {
+                ssid.isEmpty() -> Unit
+                ssid in networks -> status = "$ssid is already on the list."
+                else -> {
+                    save(networks + ssid, "Added $ssid.")
+                    newSsid = ""
+                }
+            }
+        }
+        if (networks.isEmpty()) {
+            Text("No networks yet.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        for (ssid in networks) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(ssid, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                TextButton(onClick = { save(networks - ssid, "Removed $ssid.") }) { Text("Remove") }
+            }
+        }
+        OutlinedTextField(
+            newSsid, { newSsid = it }, label = { Text("Wi-Fi name (SSID)") }, singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(enabled = newSsid.isNotBlank(), onClick = { add(newSsid) }) { Text("Add") }
+            OutlinedButton(onClick = {
+                val current = WifiTrigger.currentSsid(context)
+                if (current != null) add(current)
+                else status = "Couldn't read the Wi-Fi name. Allow location access below, and make sure you're on Wi-Fi."
+            }) { Text("Add the current Wi-Fi") }
+        }
 
         HorizontalDivider()
         Text("Permissions", style = MaterialTheme.typography.titleMedium)
