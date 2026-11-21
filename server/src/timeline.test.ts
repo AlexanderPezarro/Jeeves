@@ -87,6 +87,7 @@ describe("describeTrigger", () => {
       'On schedule "0 9 * * sat,sun" on Sat before 10:00',
     );
     expect(describeTrigger({ event: "wifi.disconnected", when: { ssid: "home", min_away_minutes: 90 } }, 0)).toBe("Wi-Fi disconnects from home after 1h 30m away");
+    expect(describeTrigger({ event: "wifi.connected", when: { ssid: ["home", "work"] } }, 0)).toBe("Wi-Fi connects to home or work");
   });
 });
 

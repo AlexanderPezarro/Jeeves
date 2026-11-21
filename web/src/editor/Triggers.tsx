@@ -1,5 +1,5 @@
 import { Cron } from "croner";
-import { useId, useMemo } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import type { Path, Trigger, When } from "../types";
 import { compact, Field, FieldIssues } from "../ui";
 import { ConditionList } from "./Conditions";
@@ -29,6 +29,33 @@ export function TriggersEditor({ value, onChange }: { value: Trigger[]; onChange
       </div>
       <FieldIssues path={["triggers"]} />
     </div>
+  );
+}
+
+const ssidText = (v: When["ssid"]) => (Array.isArray(v) ? v.join(", ") : (v ?? ""));
+
+/** "home" stays a string, "home, work" becomes a list, blank clears it. */
+function parseSsids(text: string): When["ssid"] {
+  const names = text.split(",").map((s) => s.trim()).filter(Boolean);
+  return names.length === 0 ? undefined : names.length === 1 ? names[0] : names;
+}
+
+/** Comma-separated SSIDs. Keeps its own text so a trailing comma survives while typing. */
+function SsidInput({ value, onChange }: { value: When["ssid"]; onChange: (v: When["ssid"]) => void }) {
+  const [text, setText] = useState(() => ssidText(value));
+  useEffect(() => {
+    // Only take outside changes (undo, reload); our own edits already parse to `value`.
+    if (ssidText(parseSsids(text)) !== ssidText(value)) setText(ssidText(value));
+  }, [value]);
+  return (
+    <input
+      aria-label="SSID"
+      value={text}
+      onChange={(e) => {
+        setText(e.target.value);
+        onChange(parseSsids(e.target.value));
+      }}
+    />
   );
 }
 
@@ -83,8 +110,8 @@ function TriggerCard({ value, onChange, onRemove, path }: { value: Trigger; onCh
       <details className="when" open={Object.keys(when).length > 0}>
         <summary>Only when… {Object.keys(when).length > 0 && <span className="muted small">({Object.keys(when).join(", ")})</span>}</summary>
         <div className="grid2">
-          <Field label="Wi-Fi network (SSID)" path={[...wp, "ssid"]}>
-            <input aria-label="SSID" value={when.ssid ?? ""} onChange={(e) => setWhen({ ...when, ssid: e.target.value })} />
+          <Field label="Wi-Fi network (SSID)" path={[...wp, "ssid"]} hint="Separate several networks with commas; any of them matches">
+            <SsidInput value={when.ssid} onChange={(ssid) => setWhen({ ...when, ssid })} />
           </Field>
           <Field label="Away at least (minutes)" path={[...wp, "min_away_minutes"]} hint="Only after being away from this Wi-Fi this long">
             <input

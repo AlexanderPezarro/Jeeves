@@ -1,6 +1,6 @@
 import { Cron } from "croner";
 import { describeCondition } from "./conditions.js";
-import { isSchedule, type ConfigSource, type Step, type Trigger, type Workflow } from "./config.js";
+import { isSchedule, ssidList, type ConfigSource, type Step, type Trigger, type Workflow } from "./config.js";
 import type { ConfigStore } from "./configstore.js";
 import type { Db, EventRow, StepRunRow, WorkflowRunRow } from "./db.js";
 import type { PluginHost } from "./plugins.js";
@@ -46,8 +46,9 @@ export function describeTrigger(trigger: Trigger, cooldown: Workflow["cooldown"]
   if (isSchedule(trigger)) parts.push(`On schedule "${trigger.schedule}"`);
   else {
     let name = eventName(trigger.event);
-    if (w.ssid && trigger.event.startsWith("wifi.")) name += ` ${trigger.event === "wifi.connected" ? "to" : "from"} ${w.ssid}`;
-    else if (w.ssid) name += ` on ${w.ssid}`;
+    const ssids = ssidList(w.ssid).join(" or ");
+    if (ssids && trigger.event.startsWith("wifi.")) name += ` ${trigger.event === "wifi.connected" ? "to" : "from"} ${ssids}`;
+    else if (ssids) name += ` on ${ssids}`;
     parts.push(name.charAt(0).toUpperCase() + name.slice(1));
   }
   if (w.days?.length) parts.push(`on ${w.days.map((d) => DAY_NAMES[d]).join(", ")}`);
