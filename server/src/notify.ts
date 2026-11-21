@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import * as webpush from "web-push";
 import type { Db, MessageRow } from "./db.js";
 
 /** Delivers an outgoing message to the phone. Messages are always stored first, so the app can also poll. */
@@ -9,6 +10,11 @@ export interface Notifier {
 /** Used when Firebase is not configured: the app picks messages up by polling GET /messages. */
 export class PollOnlyNotifier implements Notifier {
   async notify(): Promise<void> {}
+}
+
+/** The data every push carries, shared by FCM and Web Push so new fields are added in one place. */
+export function pushPayload(message: MessageRow): { message_id: number; text: string; items: NonNullable<MessageRow["items"]> } {
+  return { message_id: message.id, text: message.text, items: message.items ?? [] };
 }
 
 /**
@@ -42,7 +48,7 @@ export class FcmNotifier implements Notifier {
       data: {
         message_id: String(message.id),
         text: message.text,
-        items: JSON.stringify(message.items ?? []),
+        items: JSON.stringify(pushPayload(message).items),
       },
     });
     res.responses.forEach((r, i) => {
@@ -51,11 +57,93 @@ export class FcmNotifier implements Notifier {
   }
 }
 
+export interface VapidDetails {
+  publicKey: string;
+  privateKey: string;
+  subject: string;
+}
+
+type SendNotification = (
+  subscription: { endpoint: string; keys: { p256dh: string; auth: string } },
+  payload: string,
+  options: { TTL: number; urgency: "high"; vapidDetails: { subject: string; publicKey: string; privateKey: string } },
+) => Promise<unknown>;
+
+/** ntfy and UnifiedPush cap a message at about 4 KB; stay well under it once encrypted. */
+const MAX_PLAINTEXT_BYTES = 3000;
+const TTL_SECONDS = 12 * 60 * 60;
+
+/**
+ * Sends Web Push (RFC 8030, aes128gcm per RFC 8291, VAPID per RFC 8292) to every device that has
+ * registered an endpoint. With UnifiedPush the endpoint is on the self-hosted ntfy server.
+ */
+export class WebPushNotifier implements Notifier {
+  /**
+   * @param endpointRewrite `from=to`: endpoints starting with `from` are posted to `to` instead. Lets the
+   *   server reach ntfy over the Docker network when the public name only resolves to a Tailscale IP.
+   */
+  constructor(
+    private readonly db: Db,
+    private readonly vapid: VapidDetails,
+    private readonly send: SendNotification = webpush.sendNotification as unknown as SendNotification,
+    private readonly endpointRewrite?: string,
+  ) {}
+
+  private target(endpoint: string): string {
+    const eq = this.endpointRewrite?.indexOf("=") ?? -1;
+    if (!this.endpointRewrite || eq < 1) return endpoint;
+    const from = this.endpointRewrite.slice(0, eq);
+    const to = this.endpointRewrite.slice(eq + 1);
+    return endpoint.startsWith(from) ? to + endpoint.slice(from.length) : endpoint;
+  }
+
+  async notify(message: MessageRow): Promise<void> {
+    const subs = this.db.webPushSubscriptions();
+    if (subs.length === 0) return;
+    let body = JSON.stringify(pushPayload(message));
+    if (Buffer.byteLength(body) > MAX_PLAINTEXT_BYTES) body = JSON.stringify({ message_id: message.id, truncated: true });
+    const vapidDetails = { subject: this.vapid.subject, publicKey: this.vapid.publicKey, privateKey: this.vapid.privateKey };
+    await Promise.all(
+      subs.map(async (sub) => {
+        try {
+          await this.send(
+            { endpoint: this.target(sub.endpoint), keys: { p256dh: sub.p256dh, auth: sub.auth } },
+            body,
+            { TTL: TTL_SECONDS, urgency: "high", vapidDetails },
+          );
+        } catch (e) {
+          const status = (e as { statusCode?: number }).statusCode;
+          if (status === 404 || status === 410) {
+            console.warn(`Web push endpoint gone (${status}), removing it`);
+            this.db.clearWebPushByEndpoint(sub.endpoint);
+          } else {
+            console.warn(`Web push to device ${sub.device_id} failed: ${(e as Error).message}`);
+          }
+        }
+      }),
+    );
+  }
+}
+
 export function makeNotifier(db: Db, env: NodeJS.ProcessEnv = process.env): Notifier {
+  if (env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_KEY) {
+    console.log("Push: Web Push (UnifiedPush) is on");
+    return new WebPushNotifier(
+      db,
+      {
+        publicKey: env.VAPID_PUBLIC_KEY,
+        privateKey: env.VAPID_PRIVATE_KEY,
+        subject: env.VAPID_SUBJECT || "mailto:jeeves@localhost",
+      },
+      undefined,
+      env.PUSH_ENDPOINT_REWRITE || undefined,
+    );
+  }
   const path = env.FIREBASE_SERVICE_ACCOUNT;
   if (!path) {
-    console.log("FIREBASE_SERVICE_ACCOUNT not set: push is off, the app will poll for messages");
+    console.log("VAPID_* and FIREBASE_SERVICE_ACCOUNT not set: push is off, the app will poll for messages");
     return new PollOnlyNotifier();
   }
+  console.log("Push: FCM is on");
   return new FcmNotifier(db, path);
 }
