@@ -7,7 +7,7 @@ cooldown: daily
 triggers:
   - event: wifi.connected
     when:
-      ssid: MyHomeWiFi
+      ssid: MyHomeWiFi          # or a list, e.g. [MyHomeWiFi, MyHomeWiFi-5G]; any of them matches
       after: "17:00"
       before: "22:30"
       min_away_minutes: 120
