@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { isObjectSchema, JsonTextarea, SchemaForm } from "../SchemaForm";
-import { STEP_TYPES, stepType, type CondExpr, type Effort, type Path, type Step, type StepType } from "../types";
+import { STEP_TYPES, stepType, type CondExpr, type Effort, type PhoneAction, type Path, type Step, type StepType } from "../types";
 import { Field, FieldIssues } from "../ui";
 import { CondExprEditor } from "./Conditions";
 import { BUILTIN_CLAUDE_TOOLS, uniqueId, useEditorData } from "./context";
@@ -12,6 +12,7 @@ const TYPE_LABEL: Record<StepType, string> = {
   wait: "Wait",
   if: "If / else",
   stop: "Stop",
+  phone: "Phone action",
 };
 
 /** Suggested model ids for a step's override (any claude-* id is accepted). */
@@ -53,7 +54,9 @@ export function StepList({ steps, onChange, path, label }: { steps: Step[]; onCh
           ? { id, claude: { prompt: "" } }
           : type === "call"
             ? { id, call: { plugin: first?.plugin ?? "", tool: first?.tool ?? "" } }
-            : type === "wait"
+            : type === "phone"
+              ? { id, phone: { action: "media", command: "pause" } }
+              : type === "wait"
               ? { id, wait: { minutes: 10 } }
               : type === "if"
                 ? { id, if: { path: "event.", eq: "" }, then: [] }
@@ -229,6 +232,7 @@ function StepBody({ step, onChange, path }: { step: Step; onChange: (s: Step) =>
       </div>
     );
   }
+  if ("phone" in step) return <PhoneStep step={step} onChange={onChange} path={path} />;
   if ("stop" in step) {
     return (
       <Field label="Reason (optional)" path={[...path, "stop", "reason"]}>
@@ -241,6 +245,64 @@ function StepBody({ step, onChange, path }: { step: Step; onChange: (s: Step) =>
     );
   }
   return null;
+}
+
+const PHONE_DEFAULTS: Record<PhoneAction["action"], PhoneAction> = {
+  dnd: { action: "dnd", on: true },
+  volume: { action: "volume", stream: "media", percent: 30 },
+  media: { action: "media", command: "pause" },
+};
+
+function PhoneStep({ step, onChange, path }: { step: Extract<Step, { phone: unknown }>; onChange: (s: Step) => void; path: Path }) {
+  const p = [...path, "phone"];
+  const a = step.phone;
+  const set = (phone: PhoneAction) => onChange({ ...step, phone });
+  return (
+    <>
+      <Field label="Action" path={[...p, "action"]}>
+        <select aria-label="Phone action" value={a.action} onChange={(e) => set(PHONE_DEFAULTS[e.target.value as PhoneAction["action"]])}>
+          <option value="dnd">Do Not Disturb</option>
+          <option value="volume">Set volume</option>
+          <option value="media">Media control</option>
+        </select>
+      </Field>
+      {a.action === "dnd" && (
+        <Field label="Do Not Disturb on" path={[...p, "on"]}>
+          <input type="checkbox" aria-label="Do Not Disturb on" checked={a.on} onChange={(e) => set({ action: "dnd", on: e.target.checked })} />
+        </Field>
+      )}
+      {a.action === "volume" && (
+        <>
+          <Field label="Stream" path={[...p, "stream"]}>
+            <select aria-label="Volume stream" value={a.stream} onChange={(e) => set({ ...a, stream: e.target.value as typeof a.stream })}>
+              <option value="media">Media</option>
+              <option value="ring">Ring</option>
+              <option value="alarm">Alarm</option>
+            </select>
+          </Field>
+          <Field label="Percent (0-100)" path={[...p, "percent"]}>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              aria-label="Volume percent"
+              value={a.percent}
+              onChange={(e) => set({ ...a, percent: e.target.value === "" ? 0 : Number(e.target.value) })}
+            />
+          </Field>
+        </>
+      )}
+      {a.action === "media" && (
+        <Field label="Command" path={[...p, "command"]}>
+          <select aria-label="Media command" value={a.command} onChange={(e) => set({ ...a, command: e.target.value as typeof a.command })}>
+            <option value="play">Play</option>
+            <option value="pause">Pause</option>
+            <option value="next">Next</option>
+          </select>
+        </Field>
+      )}
+    </>
+  );
 }
 
 function ClaudeStep({ step, onChange, path }: { step: Extract<Step, { claude: unknown }>; onChange: (s: Step) => void; path: Path }) {

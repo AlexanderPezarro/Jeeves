@@ -3,6 +3,7 @@ import { Agent } from "./agent.js";
 import { isSchedule, type ConfigSource, type Workflow } from "./config.js";
 import type { Db, EventRow, ReminderPayload } from "./db.js";
 import type { PluginHost } from "./plugins.js";
+import { PhoneCommands } from "./phone.js";
 import { RESUME_JOB, WorkflowRunner, type RunOutcome } from "./runner.js";
 import { evaluateWorkflows, scheduleEventType, type Decision } from "./triggers.js";
 import { localTime } from "./time.js";
@@ -32,6 +33,8 @@ export class Engine {
   private readonly now: () => Date;
   private readonly onReload = () => this.reload();
   readonly runner: WorkflowRunner;
+  /** Phone commands the runner is waiting on; the result endpoint settles them. */
+  readonly phone = new PhoneCommands();
   /** Background work, tracked so tests and shutdown can wait for it. */
   readonly pending = new Set<Promise<unknown>>();
 
@@ -43,7 +46,7 @@ export class Engine {
     now?: () => Date,
   ) {
     this.now = now ?? (() => new Date());
-    this.runner = new WorkflowRunner({ db, config, plugins, agent, now: this.now });
+    this.runner = new WorkflowRunner({ db, config, plugins, agent, notifier: agent.notifier, phone: this.phone, now: this.now });
     (config as Partial<Reloadable>).on?.("reload", this.onReload);
   }
 

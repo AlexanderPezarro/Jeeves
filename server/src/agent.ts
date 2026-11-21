@@ -162,6 +162,10 @@ interface RunScope {
 export class Agent {
   private readonly now: () => Date;
 
+  get notifier(): Notifier {
+    return this.deps.notifier;
+  }
+
   constructor(private readonly deps: AgentDeps) {
     this.now = deps.now ?? (() => new Date());
   }

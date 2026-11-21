@@ -69,7 +69,13 @@ steps:
 Step types: `call: {plugin, tool, args}`, `claude: {prompt, tools?, model?, effort?, history?}`
 (`tools` is an allowlist; `model`/`effort` override the globals for that step; `history: true`
 adds the last 8 chat messages), `message: {text, items?}`, `wait`,
-`if: <condition> then: [...] else: [...]`, `stop: {reason?}`.
+`if: <condition> then: [...] else: [...]`, `stop: {reason?}`,
+`phone: {action: dnd, on} | {action: volume, stream: media|ring|alarm, percent} | {action: media, command: play|pause|next}`.
+A `phone` step pushes the command to the paired phone and waits up to 60s for it to report back.
+It fails if no device has push set up (UnifiedPush), if the phone reports an error (for example
+missing Do Not Disturb access) or if the phone doesn't answer in time, and then follows the usual
+failure path including `notify_on_failure`. In a dry run it is skipped and shows what it would send.
+Values are literal, with no templating.
 Conditions are `{path, eq|ne|gt|gte|lt|lte|contains|exists}` or `{all: [...]}` / `{any: [...]}`.
 Templates only know `{{event.<field>}}` and `{{steps.<id>.<field>}}`.
 
@@ -195,6 +201,9 @@ and the editor talks to `/app/api/*`, the same routes the device token reaches. 
 Authelia rule: without the cookie its API answers 401.
 
 ## The Android app
+
+Workflow `phone` steps need UnifiedPush set up (Settings → Push). Do Not Disturb actions also need
+the "Do Not Disturb access" permission, granted from Settings → Permissions.
 
 Every push to `main` publishes the APK to the
 [`android-latest`](https://github.com/AlexanderPezarro/Jeeves/releases/tag/android-latest) pre-release

@@ -173,6 +173,20 @@ export function buildApp({ db, engine, pairingCode, store, config = store, plugi
       return db.snoozeReminder(job, body.data.minutes, (now ?? (() => new Date()))());
     });
 
+    /** The phone reports the outcome of a pushed phone command. Device token only. */
+    authed.post("/phone-commands/:id/result", async (req, reply) => {
+      const id = Number((req.params as { id: string }).id);
+      const body = z.object({ ok: z.boolean(), error: z.string().max(500).optional() }).safeParse(req.body);
+      if (!Number.isInteger(id) || id < 1 || !body.success) return reply.code(400).send({ error: "bad_request" });
+      const row = db.getPhoneCommand(id);
+      if (!row) return reply.code(404).send({ error: "not_found" });
+      if (row.status !== "pending" || clock().toISOString() > row.expires_at) return { accepted: false };
+      const result = { ...body.data, device_id: req.device!.id };
+      if (!db.settlePhoneCommand(id, body.data.ok ? "ok" : "failed", result)) return { accepted: false };
+      engine.phone.settle(id, result);
+      return { accepted: true };
+    });
+
     authed.get("/runs", async () => ({ runs: db.recentRuns() }));
 
     registerAppSession(authed, { tokens: appTokens, now: clock });

@@ -181,10 +181,17 @@ export type Step =
   | { id: string; message: { text: string; items?: { plugin?: string; item_id?: string | number; title: string; steps?: string[]; minutes?: number }[] } }
   | { id: string; wait: { minutes: number } | { until: string } }
   | { id: string; if: CondExpr; then: Step[]; else?: Step[] }
-  | { id: string; stop: { reason?: string } | null };
+  | { id: string; stop: { reason?: string } | null }
+  | { id: string; phone: PhoneAction };
 
-export type StepType = "call" | "claude" | "message" | "wait" | "if" | "stop";
-export const STEP_TYPES: StepType[] = ["call", "claude", "message", "wait", "if", "stop"];
+/** A command the server pushes to the paired phone. Values are literal (no templating). */
+export type PhoneAction =
+  | { action: "dnd"; on: boolean }
+  | { action: "volume"; stream: "media" | "ring" | "alarm"; percent: number }
+  | { action: "media"; command: "play" | "pause" | "next" };
+
+export type StepType = "call" | "claude" | "message" | "wait" | "if" | "stop" | "phone";
+export const STEP_TYPES: StepType[] = ["call", "claude", "message", "wait", "if", "stop", "phone"];
 
 export function stepType(step: Step): StepType {
   for (const t of STEP_TYPES) if (t in step) return t;
@@ -192,6 +199,13 @@ export function stepType(step: Step): StepType {
 }
 
 const stepId = slug;
+const phoneActionSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("dnd"), on: z.boolean() }).strict(),
+  z
+    .object({ action: z.literal("volume"), stream: z.enum(["media", "ring", "alarm"]), percent: z.number().int().min(0).max(100) })
+    .strict(),
+  z.object({ action: z.literal("media"), command: z.enum(["play", "pause", "next"]) }).strict(),
+]);
 const pluginName = z.string().regex(/^[a-z0-9_]+$/, "a plugin name");
 const toolName = z.string().regex(/^[A-Za-z0-9_-]+$/, "a tool name");
 const claudeTool = z
@@ -227,6 +241,7 @@ export const stepSchema: z.ZodType<Step> = z.lazy(() =>
       .strict(),
     z.object({ id: stepId, if: condExprSchema, then: z.array(stepSchema), else: z.array(stepSchema).optional() }).strict(),
     z.object({ id: stepId, stop: z.object({ reason: z.string().optional() }).strict().nullable() }).strict(),
+    z.object({ id: stepId, phone: phoneActionSchema }).strict(),
   ]),
 ) as z.ZodType<Step>;
 
