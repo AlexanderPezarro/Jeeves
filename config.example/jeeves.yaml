@@ -19,5 +19,8 @@ plugins:
   - name: todo
     url: http://todo:8081/mcp
     token_env: TODO_PLUGIN_TOKEN
+  - name: meals
+    url: http://meals:8082/mcp
+    token_env: MEALS_PLUGIN_TOKEN
 
 # Workflows live in workflows/<id>.yaml, one per file.

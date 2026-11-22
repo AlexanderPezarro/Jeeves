@@ -38,6 +38,7 @@ services:
       - "${JEEVES_BIND:-0.0.0.0}:${JEEVES_PORT:-8080}:8080"
     depends_on:
       - todo
+      - meals
     networks:
       - default
       # Caddy (~/projects/proxy) serves it at https://jeeves.alexanderpezarro.uk, Tailscale-only.
@@ -58,6 +59,20 @@ services:
       # Chores already in todo.db are never overwritten from this file; edit them in the Chores page.
       - ./plugins/todo/chores.yaml:/config/chores.yaml:ro
       - todo-data:/data
+    # Not published: only the server talks to the plugin, over the compose network.
+
+  meals:
+    build: ./plugins/meals
+    restart: unless-stopped
+    environment:
+      TZ: Europe/London
+      MEALS_PLUGIN_TOKEN: ${MEALS_PLUGIN_TOKEN}
+      MEALS_DB_PATH: /data/meals.db
+      # Meal events (meals.cooked / meals.shop_finished / meals.plan_set) go to <JEEVES_URL>/plugin-events.
+      JEEVES_URL: http://server:8080
+      PORT: 8082
+    volumes:
+      - meals-data:/data
     # Not published: only the server talks to the plugin, over the compose network.
 
   ntfy:
@@ -83,5 +98,6 @@ networks:
 volumes:
   jeeves-data:
   todo-data:
+  meals-data:
   ntfy-cache:
   ntfy-auth:

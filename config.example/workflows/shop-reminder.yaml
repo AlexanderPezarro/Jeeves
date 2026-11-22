@@ -1,0 +1,18 @@
+# Reminds me on shop day. Workflow `wait` only takes a time of day, not a date, so this checks every
+# morning instead: the meals plugin says whether the open shop is due today (or overdue).
+id: shop-reminder
+description: Remind me to shop when the open shopping list is due
+triggers:
+  - schedule: "0 9 * * *"
+steps:
+  - id: shop
+    call: { plugin: meals, tool: get_shopping_list }
+  - id: due
+    if: { path: steps.shop.due_today, eq: true }
+    then:
+      - id: remind
+        message:
+          text: "Shop day: {{steps.shop.est_cost}} estimated. Tick things off in the Shopping list on Today."
+    else:
+      - id: not-today
+        stop: { reason: No shop due today }

@@ -1,6 +1,6 @@
 /**
  * A self-contained Jeeves for browser tests (Playwright) and local UI work: a tmp config dir, an
- * in-memory database, the real to-do plugin in-process, a scripted Claude that always answers with
+ * in-memory database, the real to-do and meals plugins in-process, a scripted Claude that always answers with
  * a short plan, and Remote-User trusted from localhost. Never use this in production.
  *
  *   npx tsx src/testserver.ts            # PORT=8090, prints "READY <url> <config dir>"
@@ -46,7 +46,21 @@ async function main() {
   });
   const todoUrl: string = await todo.listen({ host: "127.0.0.1", port: 0 });
 
+  // The real meals plugin too, so the Today views and the Recipes page have something to show.
+  const loadMeals = (f: string) => import(pathToFileURL(join(repo, "plugins/meals/src", f)).href);
+  const { buildApp: buildMealsApp } = await loadMeals("index.ts");
+  const { MealsStore } = await loadMeals("store.ts");
+  const meals = buildMealsApp({ store: new MealsStore(), token, timeZone: "Europe/London", jeevesUrl: `http://127.0.0.1:${port}` });
+  const mealsUrl: string = await meals.listen({ host: "127.0.0.1", port: 0 });
+
   const store = new ConfigStore(dir);
+  // Point the example's meals plugin at the in-process one.
+  if (store.current.plugins.some((p) => p.name === "meals")) {
+    store.editGlobals(undefined, (doc) => {
+      const i = store.current.plugins.findIndex((p) => p.name === "meals");
+      doc.setIn(["plugins", i, "url"], `${mealsUrl}/mcp`);
+    });
+  }
   // Point the example's todo plugin at the in-process one.
   if (store.current.plugins.some((p) => p.name === "todo")) {
     store.editGlobals(undefined, (doc) => {
@@ -58,7 +72,7 @@ async function main() {
 
   const db = new Db();
   recordConfigActivity(store, db);
-  const env = { ...process.env, TODO_PLUGIN_TOKEN: token };
+  const env = { ...process.env, TODO_PLUGIN_TOKEN: token, MEALS_PLUGIN_TOKEN: token };
   const plugins = new McpPluginHost(store.current.plugins, {
     env,
     settingsFor: (name) => store.current.plugin_settings[name],
@@ -97,6 +111,7 @@ async function main() {
     await app.close();
     await engine.stop();
     await todo.close();
+    await meals.close();
     process.exit(0);
   };
   process.on("SIGTERM", stop);

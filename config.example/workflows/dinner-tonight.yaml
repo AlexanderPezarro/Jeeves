@@ -1,0 +1,43 @@
+# Dinner nudge, no Claude involved. Checked at 16:00, then waits until 18:30 (workflow `wait` takes a
+# literal time of day, so this matches the plugin's default dinner time; a night's own start time is
+# shown in the message). Rings loudly every 10 minutes until the night is marked cooked; skipping or
+# going out from the app resolves the item and ends the repeat.
+id: dinner-tonight
+description: Remind me to start cooking tonight's dinner
+triggers:
+  - schedule: "0 16 * * *"
+steps:
+  - id: tonight
+    call: { plugin: meals, tool: get_tonight }
+  - id: needed
+    if:
+      any:
+        - { path: steps.tonight.kind, eq: none }
+        - { path: steps.tonight.kind, eq: out }
+        - { path: steps.tonight.kind, eq: skip }
+        - { path: steps.tonight.status, eq: cooked }
+    then:
+      - id: nothing-to-cook
+        stop: { reason: Nothing to cook tonight }
+  - id: until-dinner
+    wait: { until: "18:30" }
+  - id: recheck
+    call: { plugin: meals, tool: get_tonight }
+  - id: still-needed
+    if:
+      any:
+        - { path: steps.recheck.kind, eq: out }
+        - { path: steps.recheck.kind, eq: skip }
+        - { path: steps.recheck.status, eq: cooked }
+    then:
+      - id: handled
+        stop: { reason: Already dealt with }
+  - id: nudge
+    message:
+      text: "Time to start dinner: {{steps.recheck.name}} ({{steps.recheck.minutes}} min, planned for {{steps.recheck.start_at}})"
+      level: loud
+      items: [{ plugin: meals, item_id: "{{steps.recheck.date}}", title: "{{steps.recheck.name}}" }]
+      repeat: { every_minutes: 10, max: 6 }
+      until:
+        event: meals.cooked
+        conditions: [{ path: event.date, eq: "{{steps.recheck.date}}" }]

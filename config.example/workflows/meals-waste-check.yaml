@@ -1,0 +1,16 @@
+# Optional and off by default: once a week, look for food past its use-by date and ask what was thrown
+# away, so the pantry stays honest. Set enabled: true to use it. I reply in chat and chat-reply logs the
+# waste with adjust_pantry (reason "waste").
+id: meals-waste-check
+description: Ask about pantry items past their use-by date
+enabled: false
+triggers:
+  - schedule: "0 19 * * sat"
+steps:
+  - id: check
+    claude:
+      prompt: |
+        Read the pantry. If any lots are past their use-by date, send me one short message listing them (name,
+        quantity, use-by) and ask which I threw away so you can log it as waste. If nothing is past its
+        use-by date, don't send anything.
+      tools: [meals__get_pantry, send_message]
