@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        package: [server, plugins/todo, plugins/calendar]
+        package: [server, plugins/todo, plugins/calendar, plugins/meals]
     defaults:
       run:
         working-directory: ${{ matrix.package }}
