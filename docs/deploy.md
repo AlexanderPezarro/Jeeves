@@ -37,7 +37,7 @@ fails closed.
 Then:
 
 ```bash
-docker compose build server todo   # the server now builds from the repo root and includes web/
+docker compose build server todo calendar   # the server now builds from the repo root and includes web/
 docker compose up -d
 docker compose logs -f server      # look for "Migrated rules to workflows/" and the schedules
 ```
