@@ -303,7 +303,8 @@ export function mealActions({ store, timeZone, now = () => new Date(), events }:
     previewPlan(input: { from?: string; to?: string; nights: NightInput[]; busy_dates?: string[] }) {
       const dates = input.nights.map((n) => n.date);
       const from = checkDate(input.from ?? [...dates].sort()[0] ?? today(), "from");
-      const to = checkDate(input.to ?? addDays(from, 6), "to");
+      const last = [...dates].sort().pop() ?? from;
+      const to = checkDate(input.to ?? (addDays(from, 6) > last ? addDays(from, 6) : last), "to");
       const range = dateRange(from, to);
       const assignments = toAssignments(input.nights, range);
       const rows = store.planRange(from, to);
@@ -320,6 +321,7 @@ export function mealActions({ store, timeZone, now = () => new Date(), events }:
         to,
         nights: nights.map((n) => decorate(n, { start_at: startAt.get(n.date), locked: locked.has(n.date), status: rows.find((r) => r.date === n.date)?.status })),
         wasted_portions: a.wasted,
+        kept_dates: [...locked].sort(),
         shopping_list: { items: a.list, aisles: groupByAisle(a.list) },
         est_cost: a.est_cost,
         budget: a.budget,
@@ -337,7 +339,9 @@ export function mealActions({ store, timeZone, now = () => new Date(), events }:
       if (input.nights.length === 0 && !input.from) throw new Error("Give some nights, or a from/to range to clear");
       const dates = input.nights.map((n) => n.date).sort();
       const from = checkDate(input.from ?? dates[0], "from");
-      const to = checkDate(input.to ?? dates[dates.length - 1] ?? addDays(from, 6), "to");
+      // A week by default, so a batch cook near the end still has room for its leftovers.
+      const last = dates[dates.length - 1] ?? from;
+      const to = checkDate(input.to ?? (addDays(from, 6) > last ? addDays(from, 6) : last), "to");
       const range = dateRange(from, to);
       const assignments = toAssignments(input.nights, range);
       const { locked } = rowsAsNights(store.planRange(from, to));
@@ -362,6 +366,7 @@ export function mealActions({ store, timeZone, now = () => new Date(), events }:
         to,
         nights: store.planRange(from, to).map((r) => decorate({ date: r.date, kind: r.kind, recipe_id: r.recipe_id, cooked_from_date: r.cooked_from_date }, r)),
         wasted_portions: expanded.wasted,
+        kept_dates: [...locked].sort(),
         est_cost: a.est_cost,
         budget: a.budget,
         shop_date: a.shop.shop_date,

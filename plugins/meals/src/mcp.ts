@@ -131,7 +131,7 @@ export function buildMcpServer(deps: McpDeps): McpServer {
     "set_plan",
     {
       description:
-        "Saves the dinner plan: replaces the planned nights between from and to (nights already cooked are kept). Same input as preview_plan. " +
+        "Saves the dinner plan: replaces the planned nights between from and to (default: 7 days from the first night; nights already cooked are kept). Same input as preview_plan. " +
         "Leftover nights are filled in automatically. Sends a plan_set event. Run preview_plan first.",
       inputSchema: { from: date.optional(), to: date.optional(), nights: z.array(night) },
     },
