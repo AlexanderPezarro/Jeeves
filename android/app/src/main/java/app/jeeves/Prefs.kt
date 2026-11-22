@@ -82,6 +82,18 @@ class Prefs(context: Context) {
         get() = sp.getLong("last_message_id", 0L)
         set(v) = sp.edit { putLong("last_message_id", v) }
 
+    /** Highest message id the chat screen has shown, for its "New" divider. Notifications don't move it. */
+    var lastReadMessageId: Long
+        get() = sp.getLong("last_read_message_id", 0L)
+        set(v) = sp.edit { putLong("last_read_message_id", v) }
+
+    /** Workflows pinned to the Today tab as quick-run buttons, in the order they were pinned. */
+    var pinnedWorkflows: List<String>
+        get() = sp.getString("pinned_workflows", null)
+            ?.let { runCatching { Json.decodeFromString<List<String>>(it) }.getOrNull() }
+            ?: emptyList()
+        set(v) = sp.edit { putString("pinned_workflows", Json.encodeToString(v.distinct())) }
+
     /** When the app last checked GitHub for a newer build (epoch ms). */
     var lastUpdateCheck: Long
         get() = sp.getLong("last_update_check", 0L)

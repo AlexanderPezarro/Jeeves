@@ -20,7 +20,7 @@ Android app ──events──▶ server (workflows, scheduler, Claude) ──MC
 | [`plugins/calendar/`](plugins/calendar) | Calendar plugin: read-only Google Calendar (iCal feed) events and free evening slots, exposed as MCP tools. |
 | [`plugins/meals/`](plugins/meals) | Meals plugin: recipes, dinner plan, pantry and shopping list, with the packs/cost/leftover maths done in code. |
 | [`web/`](web) | Web UI (Vite, React): dashboard, workflow editor, activity, plugins, settings. Served at `/admin` (browser, behind Authelia) and at `/app` (the phone app's built-in workflow editor). |
-| [`android/`](android) | Native Android app (Kotlin, Jetpack Compose): Today list, chat with Jeeves, activity, workflows, plugin settings, Wi-Fi trigger, notifications. |
+| [`android/`](android) | Native Android app (Kotlin, Jetpack Compose): Today list (with what's coming up and pinned workflows), chat with Jeeves, workflows (with history and the activity log), plugin settings, Wi-Fi trigger, notifications. |
 
 ## How it works
 
@@ -237,7 +237,7 @@ to sit behind Caddy and Authelia: see [docs/deploy.md](docs/deploy.md) for the p
   anything; `POST /workflows/:id/run` runs one now, and `{"dry_run": true}` records messages
   instead of sending them and only calls read-only tools.
 
-The web UI and the app's Activity tab are built on these.
+The web UI and the app's Today (Coming up) and Workflows (history, activity log) screens are built on these.
 
 ## Editing workflows from the phone
 

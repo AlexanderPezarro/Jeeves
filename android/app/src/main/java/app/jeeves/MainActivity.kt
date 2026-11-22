@@ -8,10 +8,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -20,25 +22,28 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.lifecycleScope
-import app.jeeves.ui.ActivityScreen
 import app.jeeves.ui.ChatScreen
 import app.jeeves.ui.PluginsScreen
 import app.jeeves.ui.SettingsScreen
 import app.jeeves.ui.TodayScreen
 import app.jeeves.ui.UpdateBanner
 import app.jeeves.ui.WorkflowsScreen
+import app.jeeves.ui.loadAttention
 
 class MainActivity : ComponentActivity() {
     private var tab by mutableIntStateOf(TAB_TODAY)
     private var paired by mutableStateOf(false)
-    /** A page opened from Settings (Workflows or Plugins), or null for Settings itself. */
+    /** A page opened from Settings (Plugins), or null for Settings itself. */
     private var settingsPage by mutableStateOf<String?>(null)
+    /** How many things need a look on the Workflows tab (failed runs, broken files, plugins down). */
+    private var attention by mutableIntStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -62,13 +67,18 @@ class MainActivity : ComponentActivity() {
                                 icon = { Icon(Icons.Filled.Email, contentDescription = null) }, label = { Text("Jeeves") },
                             )
                             NavigationBarItem(
-                                selected = tab == TAB_ACTIVITY, onClick = { tab = TAB_ACTIVITY }, enabled = paired,
-                                icon = { Icon(Icons.Filled.DateRange, contentDescription = null) }, label = { Text("Activity") },
+                                selected = tab == TAB_WORKFLOWS, onClick = { tab = TAB_WORKFLOWS }, enabled = paired,
+                                icon = {
+                                    BadgedBox(badge = { if (attention > 0) Badge { Text("$attention") } }) {
+                                        Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                                    }
+                                },
+                                label = { Text("Workflows") },
                             )
                             NavigationBarItem(
                                 selected = tab == TAB_SETTINGS,
                                 onClick = {
-                                    // Tapping Settings again leaves Workflows/Plugins.
+                                    // Tapping Settings again leaves Plugins.
                                     if (tab == TAB_SETTINGS) settingsPage = null
                                     tab = TAB_SETTINGS
                                 },
@@ -77,13 +87,16 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                 ) { padding ->
+                    // Refresh the badge whenever the tab changes; the Workflows tab also reports it after each load.
+                    LaunchedEffect(tab, paired) {
+                        if (paired) attention = try { loadAttention(Api(prefs)).size } catch (_: Exception) { attention }
+                    }
                     val modifier = Modifier.padding(padding)
                     when (tab) {
-                        TAB_TODAY -> TodayScreen(prefs, modifier)
+                        TAB_TODAY -> TodayScreen(prefs, modifier, onOpenChat = { tab = TAB_CHAT })
                         TAB_CHAT -> ChatScreen(prefs, modifier)
-                        TAB_ACTIVITY -> ActivityScreen(prefs, modifier)
+                        TAB_WORKFLOWS -> WorkflowsScreen(prefs, modifier, onAttention = { attention = it })
                         else -> when (settingsPage) {
-                            PAGE_WORKFLOWS -> WorkflowsScreen(prefs, modifier, onBack = { settingsPage = null })
                             PAGE_PLUGINS -> PluginsScreen(prefs, modifier, onBack = { settingsPage = null })
                             else -> SettingsScreen(
                                 prefs, modifier,
@@ -92,7 +105,6 @@ class MainActivity : ComponentActivity() {
                                     (application as JeevesApp).startBackground()
                                     tab = TAB_TODAY
                                 },
-                                onOpenWorkflows = { settingsPage = PAGE_WORKFLOWS },
                                 onOpenPlugins = { settingsPage = PAGE_PLUGINS },
                             )
                         }
@@ -117,9 +129,8 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_TAB = "tab"
         const val TAB_TODAY = 0
         const val TAB_CHAT = 1
-        const val TAB_ACTIVITY = 2
+        const val TAB_WORKFLOWS = 2
         const val TAB_SETTINGS = 3
-        private const val PAGE_WORKFLOWS = "workflows"
         private const val PAGE_PLUGINS = "plugins"
     }
 }
