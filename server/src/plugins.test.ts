@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import Fastify from "fastify";
 import { Agent } from "./agent.js";
@@ -6,7 +7,7 @@ import { UiTokens } from "./auth.js";
 import { ConfigStore } from "./configstore.js";
 import { Db } from "./db.js";
 import { Engine } from "./engine.js";
-import type { ManifestInput as Manifest } from "./manifest.js";
+import { manifestSchema, type ManifestInput as Manifest } from "./manifest.js";
 import { McpPluginHost } from "./plugins.js";
 import { pair, RecordingNotifier, scriptedClaude, tmpConfigDir } from "./testkit.js";
 
@@ -308,5 +309,30 @@ describe("plugin events", () => {
     expect((await w.app.inject({ method: "POST", url: "/plugins", headers: w.headers, payload: { name: "calendar", url: "http://x/mcp", token_env: "X" } })).statusCode).toBe(409);
     expect((await w.app.inject({ method: "DELETE", url: "/plugins/calendar", headers: w.headers })).statusCode).toBe(200);
     expect(w.store.current.plugins.map((p) => p.name)).toEqual(["fake"]);
+  });
+});
+
+describe("exercise plugin manifest (workout-app contract)", () => {
+  // Copy of what workout-app serves at GET /jeeves/manifest; keep in step with its Part A.
+  const fixture = JSON.parse(readFileSync(new URL("./fixtures/exercise-manifest.json", import.meta.url), "utf8"));
+
+  it("parses with manifestSchema and stays inside the contract limits", () => {
+    const parsed = manifestSchema.parse(fixture);
+    expect(parsed.name).toBe("exercise");
+    expect(parsed.views.map((v) => v.id)).toEqual(["training"]);
+    expect(parsed.item_actions.map((a) => a.id)).toEqual(["done", "skip", "hevy"]);
+    expect(parsed.item_actions.length).toBeLessThanOrEqual(3);
+    expect(parsed.events).toEqual(["session_done", "session_missed"]);
+    expect(parsed.instructions!.length).toBeLessThanOrEqual(4000);
+    expect(Object.keys(parsed.steps)).toEqual(
+      expect.arrayContaining(["get_today", "get_week", "mark_session", "plan_sessions", "move_session", "send_to_hevy", "get_hevy_workouts", "sync_hevy"]),
+    );
+  });
+
+  it("exposes its events as <plugin>.* to workflows", async () => {
+    const w = await world(fixture);
+    await w.host.refreshManifest("fake");
+    expect(w.host.manifestEvents()).toEqual(["fake.session_done", "fake.session_missed"]);
+    expect(w.host.itemActions("fake").map((a) => a.id)).toEqual(["done", "skip", "hevy"]);
   });
 });

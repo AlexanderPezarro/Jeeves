@@ -121,7 +121,9 @@ plugins:
 ```
 
 The to-do plugin is the first one. A calendar, budget-app or Home Assistant plugin can follow the
-same contract without changes to the server.
+same contract without changes to the server. A plugin can also be an existing app that gains the
+contract: the exercise plugin is the standalone workout-app, reached at `http://workout-app:4321/mcp`
+over `proxy_network` (see "External plugins" in [`docs/deploy.md`](docs/deploy.md)).
 
 Plugins can also publish a manifest at `GET /jeeves/manifest`, which declares settings (a JSON
 Schema), a UI page and the events they emit; a plugin without one is tools-only and still works.

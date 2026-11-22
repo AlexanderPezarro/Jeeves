@@ -1,0 +1,6 @@
+# Settings for the exercise plugin (workout-app). Jeeves pushes these to the app on every connect;
+# the Plugins page in the web UI edits the same values.
+emit_events: true          # post session_done / session_missed events to Jeeves
+hevy_poll_minutes: 15      # how often to check Hevy for finished workouts (0 = off)
+session_time: "18:00"      # when you usually train; keep equal to the wait in workflows/training-today.yaml
+missed_sweep_time: "23:30" # after this, planned sessions still unmarked count as missed

@@ -1,0 +1,20 @@
+# After a skipped or unmarked session: Claude suggests a reschedule only when the week is behind.
+id: missed-session
+description: Suggest a reschedule for a missed session when behind
+cooldown: 0
+triggers:
+  - event: exercise.session_missed
+    when:
+      conditions: [{ path: event.behind, eq: true }]
+steps:
+  - id: suggest
+    claude:
+      prompt: >-
+        {{event.label}} on {{event.date}} was {{event.reason}}. This week is behind
+        ({{event.week_done}}/{{event.week_goal}}). Read get_week (and the calendar, if you have its tools), then
+        send one message proposing a specific free evening for it (plan_sessions). Don't move
+        anything; the user replies to approve. Never drop it silently: if nothing fits, say it
+        stays a make-up.
+      # Exact tool names only (no wildcards); a tool whose plugin isn't connected is just not offered.
+      # With a calendar plugin, add its read tools here (e.g. calendar__list_events) so Claude can see free evenings.
+      tools: [exercise__get_week, exercise__plan_sessions, send_message]

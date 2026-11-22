@@ -39,9 +39,12 @@ services:
     depends_on:
       - todo
     networks:
-      - default
+      default: {}
       # Caddy (~/projects/proxy) serves it at https://jeeves.alexanderpezarro.uk, Tailscale-only.
-      - proxy_network
+      # The jeeves-server alias is how external plugins (workout-app) post events back, as
+      # JEEVES_URL=http://jeeves-server:8080 (see "External plugins" in docs/deploy.md).
+      proxy_network:
+        aliases: [jeeves-server]
 
   todo:
     build: ./plugins/todo
