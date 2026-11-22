@@ -17,6 +17,7 @@ Android app ──events──▶ server (workflows, scheduler, Claude) ──MC
 | [`server/`](server) | Control plane: event API, workflow engine, job scheduler, plugin host, Claude runs. TypeScript, Fastify, SQLite. |
 | [`config.example/`](config.example) | Template for the live `config/` directory: globals and one file per workflow. |
 | [`plugins/todo/`](plugins/todo) | To-do plugin: chores, recurrence and completion, exposed as MCP tools. |
+| [`plugins/calendar/`](plugins/calendar) | Calendar plugin: read-only Google Calendar (iCal feed) events and free evening slots, exposed as MCP tools. |
 | [`plugins/meals/`](plugins/meals) | Meals plugin: recipes, dinner plan, pantry and shopping list, with the packs/cost/leftover maths done in code. |
 | [`web/`](web) | Web UI (Vite, React): dashboard, workflow editor, activity, plugins, settings. Served at `/admin` (browser, behind Authelia) and at `/app` (the phone app's built-in workflow editor). |
 | [`android/`](android) | Native Android app (Kotlin, Jetpack Compose): Today list, chat with Jeeves, activity, workflows, plugin settings, Wi-Fi trigger, notifications. |
@@ -121,8 +122,10 @@ plugins:
     token_env: TODO_PLUGIN_TOKEN
 ```
 
-The to-do plugin is the first one. A calendar, budget-app or Home Assistant plugin can follow the
-same contract without changes to the server.
+The to-do plugin is the first one, followed by the calendar plugin below. A budget-app or Home
+Assistant plugin can follow the same contract without changes to the server. A plugin can also be an existing app that gains the
+contract: the exercise plugin is the standalone workout-app, reached at `http://workout-app:4321/mcp`
+over `proxy_network` (see "External plugins" in [`docs/deploy.md`](docs/deploy.md)).
 
 Plugins can also publish a manifest at `GET /jeeves/manifest`, which declares settings (a JSON
 Schema), a UI page and the events they emit; a plugin without one is tools-only and still works.
@@ -171,6 +174,22 @@ events on or off), a **Chores** page for adding, editing and deleting chores, th
 `todo.task_started` / `todo.task_completed` events it posts back to Jeeves (`JEEVES_URL`), a
 **Today** view with Start/Done/Skip on each task, and Done / Snooze 15 min / Skip on notifications.
 
+### Calendar plugin
+
+[`plugins/calendar`](plugins/calendar) lets a Claude step see which evenings are busy (for example
+a weekly "plan my week"). It is read-only: it fetches your Google Calendar **Secret address in iCal
+format** (Calendar settings, Integrate calendar), expands recurring events, and offers two tools:
+`calendar__list_events` and `calendar__free_slots` (free gaps between, by default, 17:00 and 22:00
+on each day, with the busy events and all-day events listed alongside so Claude can judge). There is
+no OAuth, database or UI page.
+
+The address is a secret, so it lives in `.env` as `CALENDAR_ICAL_URL`; `config/plugins/calendar.yaml`
+refers to it as `calendar_url_1: {env: CALENDAR_ICAL_URL}` (see
+[`config.example/plugins/calendar.yaml`](config.example/plugins/calendar.yaml)) and the server pushes
+the value to the plugin. Up to three calendars can be set (`calendar_url_1` to `_3`). Feeds are cached
+for about 10 minutes; if Google can't be reached the last copy is served and marked `stale`, and
+Claude is told to say so. Google's own export can lag edits by a few hours, so treat the result as
+close, not real-time.
 ### Meals plugin
 
 `plugins/meals` plans dinners for one person: what to eat tonight, when to cook, when to shop. It
@@ -268,6 +287,7 @@ of minutes after a trigger. Firebase push (instant delivery) is wired into the s
 
 ```bash
 cd plugins/todo && npm install && npm test    # including a real MCP round trip
+cd plugins/calendar && npm install && npm test   # feeds are faked; no network needed
 cd plugins/meals && npm install && npm test   # planner maths, store, MCP and Jeeves routes
 cd server && npm install && npm test          # Claude is scripted; e2e test runs the real to-do plugin
 cd web && npm install && npm run build && npm run test:e2e   # Playwright smoke test

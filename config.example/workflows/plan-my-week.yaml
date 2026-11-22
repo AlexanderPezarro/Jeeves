@@ -16,7 +16,7 @@ steps:
         Plan my next 7 dinners, starting tomorrow.
         1. If calendar tools are offered, read my calendar for those days and treat evenings with events
            as busy or out. Otherwise ask me in the message which nights are out.
-        2. If exercise tools are offered, call exercise__plan_sessions and place the week's training
+        2. If exercise tools are offered, call exercise__get_week, then exercise__plan_sessions (pass busy nights as busy_dates) to place the week's training
            sessions into my free evenings. Give training nights a quick recipe (low minutes) or a leftover.
         3. Read the pantry and the existing plan, then the recipes. Use what expires soonest. Draft the 7
            nights, leaving out the nights I'm out.
@@ -38,5 +38,7 @@ steps:
         - meals__save_recipe
         - meals__upsert_ingredient
         - calendar__list_events
+        - calendar__free_slots
+        - exercise__get_week
         - exercise__plan_sessions
         - send_message

@@ -1,0 +1,6 @@
+# Calendar plugin settings. The address is a secret: it lives in .env (CALENDAR_ICAL_URL), not here.
+# Google Calendar > Settings > Integrate calendar > Secret address in iCal format.
+calendar_url_1: {env: CALENDAR_ICAL_URL}
+# calendar_name_1: Me   # optional label; defaults to the calendar's own name
+# Keep in step with timezone in jeeves.yaml (it is not pushed to plugins).
+timezone: Europe/London

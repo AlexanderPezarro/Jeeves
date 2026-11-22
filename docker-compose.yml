@@ -1,4 +1,4 @@
-# Jeeves: control server + to-do plugin.
+# Jeeves: control server + to-do and calendar plugins.
 # Put your settings in config/ (copy config.example/), plugins/todo/chores.yaml and .env (see the *.example files).
 services:
   server:
@@ -38,11 +38,15 @@ services:
       - "${JEEVES_BIND:-0.0.0.0}:${JEEVES_PORT:-8080}:8080"
     depends_on:
       - todo
+      - calendar
       - meals
     networks:
-      - default
+      default: {}
       # Caddy (~/projects/proxy) serves it at https://jeeves.alexanderpezarro.uk, Tailscale-only.
-      - proxy_network
+      # The jeeves-server alias is how external plugins (workout-app) post events back, as
+      # JEEVES_URL=http://jeeves-server:8080 (see "External plugins" in docs/deploy.md).
+      proxy_network:
+        aliases: [jeeves-server]
 
   todo:
     build: ./plugins/todo
@@ -61,6 +65,16 @@ services:
       - todo-data:/data
     # Not published: only the server talks to the plugin, over the compose network.
 
+  calendar:
+    build: ./plugins/calendar
+    restart: unless-stopped
+    environment:
+      TZ: Europe/London
+      CALENDAR_PLUGIN_TOKEN: ${CALENDAR_PLUGIN_TOKEN}
+    # Read-only, keeps nothing on disk and is not published: only the server talks to it, over the
+    # compose network. It needs outbound internet to fetch the Google Calendar iCal feed. The feed
+    # address is a secret (config/plugins/calendar.yaml -> CALENDAR_ICAL_URL in .env) and is pushed
+    # to it by the server.
   meals:
     build: ./plugins/meals
     restart: unless-stopped
