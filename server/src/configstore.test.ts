@@ -57,7 +57,7 @@ describe("ConfigStore", () => {
       "training-today",
       "weekend-morning",
     ]);
-    expect(store.current.plugins.map((p) => p.name)).toEqual(["todo", "exercise"]);
+    expect(store.current.plugins.map((p) => p.name)).toEqual(["todo", "calendar", "exercise"]);
     expect(store.current.plugin_settings.exercise).toMatchObject({ session_time: "18:00", hevy_poll_minutes: 15 });
   });
 
