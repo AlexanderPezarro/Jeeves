@@ -14,12 +14,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -32,20 +33,37 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import app.jeeves.Api
-import app.jeeves.ApiException
 import app.jeeves.FeedItem
-import app.jeeves.Prefs
 import app.jeeves.StepRun
-import app.jeeves.Upcoming
-import app.jeeves.UpcomingItem
 import app.jeeves.WorkflowRun
 import kotlinx.coroutines.launch
 
+/** A slice of /activity. [kind] and [status] are passed straight to the server's filters. */
+enum class LogFilter(val label: String, val kind: String?, val status: String? = null) {
+    /** What happened: runs, reminders, button taps, config and plugin changes. No trigger checks. */
+    Runs("Runs", "workflow_run,reminder,item_action,config,plugin"),
+    Problems("Failed", "workflow_run", "failed"),
+    /** Every time a trigger was checked, fired or not: the "why didn't it run?" view. */
+    Checks("Trigger checks", "evaluation"),
+    All("Everything", null),
+}
+
+/**
+ * The activity log, newest first and grouped by day. Without [workflowId] it covers everything (opened
+ * from the Workflows tab); with one it is that workflow's history, where runs are all that's relevant.
+ */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun ActivityScreen(prefs: Prefs, modifier: Modifier = Modifier) {
-    val api = remember { Api(prefs) }
+fun ActivityLogScreen(
+    api: Api,
+    modifier: Modifier = Modifier,
+    workflowId: String? = null,
+    initialFilter: LogFilter = LogFilter.Runs,
+    onBack: () -> Unit,
+) {
     val scope = rememberCoroutineScope()
-    var upcoming by remember { mutableStateOf<Upcoming?>(null) }
+    val filters = if (workflowId == null) LogFilter.entries else listOf(LogFilter.Runs, LogFilter.Problems, LogFilter.Checks)
+    var filter by remember { mutableStateOf(initialFilter) }
     var feed by remember { mutableStateOf<List<FeedItem>>(emptyList()) }
     var nextCursor by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(true) }
@@ -53,11 +71,13 @@ fun ActivityScreen(prefs: Prefs, modifier: Modifier = Modifier) {
     var status by remember { mutableStateOf<String?>(null) }
     var openRunId by remember { mutableStateOf<Long?>(null) }
 
+    // A workflow's own history has no config/plugin rows, so "Runs" there means runs only.
+    fun kindFor(f: LogFilter) = if (workflowId != null && f == LogFilter.Runs) "workflow_run" else f.kind
+
     fun refresh() = scope.launch {
         loading = true
         status = try {
-            upcoming = api.upcoming(48)
-            val page = api.activity()
+            val page = api.activity(workflow = workflowId, kind = kindFor(filter), status = filter.status)
             feed = page.items
             nextCursor = page.next_cursor
             null
@@ -71,7 +91,7 @@ fun ActivityScreen(prefs: Prefs, modifier: Modifier = Modifier) {
         val cursor = nextCursor ?: return@launch
         loadingMore = true
         status = try {
-            val page = api.activity(cursor = cursor)
+            val page = api.activity(cursor = cursor, workflow = workflowId, kind = kindFor(filter), status = filter.status)
             // The cursor is a timestamp, so rows sharing it can repeat; drop those.
             val seen = feed.map { feedKey(it) }.toSet()
             feed = feed + page.items.filter { feedKey(it) !in seen }
@@ -83,73 +103,49 @@ fun ActivityScreen(prefs: Prefs, modifier: Modifier = Modifier) {
         loadingMore = false
     }
 
-    fun cancel(item: UpcomingItem) = scope.launch {
-        val jobId = item.job_id ?: return@launch
-        status = try {
-            api.cancelJob(jobId)
-            "Cancelled."
-        } catch (e: ApiException) {
-            when (e.code) {
-                409 -> "That has already run or was cancelled."
-                404 -> "That job no longer exists."
-                else -> e.message
-            }
-        } catch (e: Exception) {
-            e.message
-        }
-        refresh()
-    }
-
-    LaunchedEffect(Unit) { refresh() }
+    LaunchedEffect(filter) { refresh() }
 
     val runId = openRunId
     if (runId != null) {
         RunDetailScreen(api, runId, modifier = modifier, onBack = { openRunId = null })
         return
     }
+    BackHandler(onBack = onBack)
 
     Column(modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-        ScreenHeader("Activity", Modifier.padding(top = 16.dp), onRefresh = { refresh() })
+        ScreenHeader(workflowId ?: "Activity log", Modifier.padding(top = 16.dp), onBack = onBack, onRefresh = { refresh() })
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            filters.forEach { f ->
+                FilterChip(selected = f == filter, onClick = { filter = f }, label = { Text(f.label) })
+            }
+        }
+        if (filter == LogFilter.Checks) {
+            Text(
+                "Each time an event or schedule was checked against " + (workflowId ?: "a workflow") +
+                    ", and why it did or didn't run.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         status?.let { Text(it, modifier = Modifier.padding(vertical = 4.dp), style = MaterialTheme.typography.bodyMedium) }
 
-        if (loading && upcoming == null && feed.isEmpty()) {
+        if (loading && feed.isEmpty()) {
             Row(Modifier.fillMaxWidth().padding(32.dp), horizontalArrangement = Arrangement.Center) { CircularProgressIndicator() }
         } else LazyColumn(
             contentPadding = PaddingValues(vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            item { SectionTitle("Next up") }
-            val next = upcoming?.items.orEmpty()
-            if (next.isEmpty()) {
-                item { Text("Nothing scheduled in the next 48 hours.", style = MaterialTheme.typography.bodyMedium) }
+            if (feed.isEmpty()) item {
+                Text(
+                    if (filter == LogFilter.Problems) "Nothing has failed." else "Nothing yet.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
             }
-            items(next, key = { "u-${it.kind}-${it.job_id ?: ""}-${it.workflow_id ?: ""}-${it.at}" }) { item ->
-                UpcomingCard(item, onCancel = { cancel(item) })
-            }
-
-            val waiting = upcoming?.waiting_for.orEmpty()
-            if (waiting.isNotEmpty()) {
-                item { SectionTitle("Waiting for…") }
-                items(waiting, key = { "w-${it.workflow_id}-${it.event}" }) { w ->
-                    Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
-                        Text(
-                            w.description ?: w.event ?: w.workflow_id,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = if (w.enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.outline,
-                        )
-                        Text(
-                            w.workflow_id + if (w.enabled) "" else " (disabled)",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.outline,
-                        )
-                    }
+            feed.groupBy { localDate(it.at) }.forEach { (day, rows) ->
+                item(key = "d-$day") { DayHeader(day) }
+                items(rows, key = { feedKey(it) }) { item ->
+                    FeedCard(item, showWorkflow = workflowId == null, onOpenRun = { id -> openRunId = id })
                 }
-            }
-
-            item { SectionTitle("Recent") }
-            if (feed.isEmpty()) item { Text("No activity yet.", style = MaterialTheme.typography.bodyMedium) }
-            items(feed, key = { feedKey(it) }) { item ->
-                FeedCard(item, onOpenRun = { id -> openRunId = id })
             }
             if (nextCursor != null) {
                 item {
@@ -164,76 +160,41 @@ fun ActivityScreen(prefs: Prefs, modifier: Modifier = Modifier) {
 
 private fun feedKey(item: FeedItem) = "f-${item.kind}-${item.id ?: item.at}"
 
-@Composable
-private fun SectionTitle(text: String) {
-    Text(text, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 8.dp))
-}
-
-@Composable
-private fun UpcomingCard(item: UpcomingItem, onCancel: () -> Unit) {
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(localTime(item.at), style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f))
-                when (item.kind) {
-                    "schedule" -> item.status?.let { StatusChip(it) }
-                    "wait" -> StatusChip(if (item.dry_run) "wait (dry run)" else "wait")
-                    "followup" -> StatusChip("follow-up")
-                    "reminder" -> StatusChip("reminder" + (item.level?.let { " · $it" } ?: ""))
-                    else -> StatusChip(item.kind)
-                }
-            }
-            when (item.kind) {
-                "schedule" -> {
-                    Text(item.workflow_id ?: "", style = MaterialTheme.typography.titleMedium)
-                    item.reason?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
-                }
-                "wait" -> {
-                    Text(item.workflow_id ?: "", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        "Run #${item.workflow_run_id ?: "?"} resumes" + (item.next_step?.let { " at step $it" } ?: ""),
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                }
-                "followup" -> Text(item.message ?: "Follow-up", style = MaterialTheme.typography.bodyLarge)
-                "reminder" -> {
-                    Text(item.text ?: item.message ?: "Reminder", style = MaterialTheme.typography.bodyLarge)
-                    item.plugin?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline) }
-                }
-                else -> Text(item.workflow_id ?: item.message ?: "", style = MaterialTheme.typography.bodyMedium)
-            }
-            if ((item.kind == "wait" || item.kind == "followup" || item.kind == "reminder") && item.job_id != null) {
-                TextButton(onClick = onCancel) { Text("Cancel") }
-            }
-        }
-    }
-}
+private val noisyKinds = setOf("config_reload", "plugin_connect")
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun FeedCard(item: FeedItem, onOpenRun: (Long) -> Unit) {
+private fun FeedCard(item: FeedItem, showWorkflow: Boolean, onOpenRun: (Long) -> Unit) {
     val runId = item.id
     val clickable = item.kind == "workflow_run" && runId != null
-    Card(Modifier.fillMaxWidth().let { if (clickable) it.clickable { onOpenRun(runId!!) } else it }) {
+    val failed = item.status == "failed" || item.kind == "config_error" || item.kind == "plugin_disconnect"
+    val colors = when {
+        failed -> CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f))
+        // Routine housekeeping and checks that didn't fire are background detail: draw them flat.
+        item.kind in noisyKinds || (item.kind == "evaluation" && !item.fired) ->
+            CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        else -> CardDefaults.cardColors()
+    }
+    Card(Modifier.fillMaxWidth().let { if (clickable) it.clickable { onOpenRun(runId!!) } else it }, colors = colors) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(localTime(item.at), style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f))
+                Text(clockTime(item.at), style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f))
                 when (item.kind) {
                     "evaluation" -> StatusChip(if (item.fired) "fired" else "skipped")
                     "workflow_run" -> StatusChip(item.status ?: "?")
                     "config_error" -> StatusChip("error")
-                    else -> StatusChip(item.kind)
+                    else -> StatusChip(item.kind.replace('_', ' '))
                 }
             }
             when (item.kind) {
                 "evaluation" -> {
-                    Text(item.workflow_id ?: "", style = MaterialTheme.typography.titleMedium)
+                    if (showWorkflow) Text(item.workflow_id ?: "", style = MaterialTheme.typography.titleMedium)
                     val what = if (item.trigger_kind == "schedule") "Schedule" else "Event ${item.event_type ?: ""}".trim()
                     Text(what + if (item.simulated) " (simulated)" else "", style = MaterialTheme.typography.labelMedium)
                     item.reason?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
                 }
                 "workflow_run" -> {
-                    Text(item.workflow_id ?: "", style = MaterialTheme.typography.titleMedium)
+                    if (showWorkflow) Text(item.workflow_id ?: "", style = MaterialTheme.typography.titleMedium)
                     Text(
                         listOfNotNull(item.trigger?.let { "Trigger: $it" }, if (item.dry_run) "dry run" else null).joinToString(" · "),
                         style = MaterialTheme.typography.labelMedium,

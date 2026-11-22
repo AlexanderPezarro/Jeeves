@@ -99,7 +99,7 @@ The `authelia/` directory is root-owned. If the edit or the restart needs root, 
 - `curl -H 'Remote-User: alex' https://jeeves.alexanderpezarro.uk/admin/api/me` without a session
   is redirected or refused by Authelia; from the LAN, `curl http://<host>:8080/admin/api/me`
   fails (port bound to 127.0.0.1) and even from the host gives 401 (not a trusted peer).
-- The phone app still pairs, polls `/messages` and shows the new Activity tab.
+- The phone app still pairs, polls `/messages` and shows the Workflows tab and its activity log.
 - Post a test event: `curl -H "Authorization: Bearer <device token>" -H 'content-type: application/json'
   -d '{"type":"wifi.connected","payload":{"ssid":"MyHomeWiFi","away_minutes":180}}'
   https://jeeves.alexanderpezarro.uk/events` and look at Activity.

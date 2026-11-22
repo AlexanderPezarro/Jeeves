@@ -56,7 +56,6 @@ fun SettingsScreen(
     prefs: Prefs,
     modifier: Modifier = Modifier,
     onPaired: () -> Unit,
-    onOpenWorkflows: () -> Unit = {},
     onOpenPlugins: () -> Unit = {},
 ) {
     val context = LocalContext.current
@@ -105,6 +104,7 @@ fun SettingsScreen(
                         api.pair(serverUrl, code, deviceName)
                         // Don't replay old messages as notifications on a fresh pairing.
                         prefs.lastMessageId = api.messages(0).lastOrNull()?.id ?: 0L
+                        prefs.lastReadMessageId = prefs.lastMessageId
                         onPaired()
                         "Paired."
                     } catch (e: Exception) {
@@ -117,7 +117,6 @@ fun SettingsScreen(
         if (prefs.isPaired) {
             HorizontalDivider()
             Text("Automation", style = MaterialTheme.typography.titleMedium)
-            NavRow("Workflows", "Turn workflows on or off, run them now", onOpenWorkflows)
             NavRow("Plugins", "Plugin status, settings and pages", onOpenPlugins)
         }
 

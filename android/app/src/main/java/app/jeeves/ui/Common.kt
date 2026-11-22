@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
@@ -49,6 +50,41 @@ fun localTime(iso: String?): String {
     } catch (_: Exception) {
         iso
     }
+}
+
+/** The local calendar day of an ISO timestamp, or null if it doesn't parse. */
+fun localDate(iso: String?): LocalDate? =
+    if (iso.isNullOrBlank()) null else try { Instant.parse(iso).atZone(ZoneId.systemDefault()).toLocalDate() } catch (_: Exception) { null }
+
+/** True if [iso] falls on today's local date. */
+fun isToday(iso: String?): Boolean = localDate(iso) == LocalDate.now()
+
+/** A day heading: "Today", "Yesterday", "Tomorrow" or e.g. "Mon 18 Nov". */
+fun dayLabel(date: LocalDate): String {
+    val today = LocalDate.now()
+    return when (date) {
+        today -> "Today"
+        today.plusDays(1) -> "Tomorrow"
+        today.minusDays(1) -> "Yesterday"
+        else -> date.format(dateFormat)
+    }
+}
+
+/** Just the local clock time of an ISO timestamp, e.g. "18:30". */
+fun clockTime(iso: String?): String {
+    if (iso.isNullOrBlank()) return ""
+    return try { Instant.parse(iso).atZone(ZoneId.systemDefault()).format(timeFormat) } catch (_: Exception) { iso }
+}
+
+/** A small heading that starts a day's group in a list. */
+@Composable
+fun DayHeader(date: LocalDate?, modifier: Modifier = Modifier) {
+    Text(
+        date?.let { dayLabel(it) } ?: "Earlier",
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = modifier.padding(top = 8.dp),
+    )
 }
 
 /** Arbitrary JSON as readable text: strings unquoted, everything else pretty-printed and capped. */
@@ -95,6 +131,7 @@ fun ScreenHeader(
     modifier: Modifier = Modifier,
     onBack: (() -> Unit)? = null,
     onRefresh: (() -> Unit)? = null,
+    actions: @Composable RowScope.() -> Unit = {},
 ) {
     Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         if (onBack != null) {
@@ -107,6 +144,7 @@ fun ScreenHeader(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
+        actions()
         if (onRefresh != null) {
             IconButton(onClick = onRefresh) { Icon(Icons.Filled.Refresh, contentDescription = "Refresh") }
         }
