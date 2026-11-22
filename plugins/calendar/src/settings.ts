@@ -89,8 +89,9 @@ export class SettingsHolder {
   private current: Settings;
   private listeners: (() => void)[] = [];
 
-  constructor() {
-    this.current = settingsSchema.parse({});
+  /** `fallbackTimeZone` (the container's TZ) applies when settings don't say. */
+  constructor(private readonly fallbackTimeZone = "Europe/London") {
+    this.current = settingsSchema.parse({ timezone: isValidTimeZone(fallbackTimeZone) ? fallbackTimeZone : undefined });
   }
 
   get(): Settings {
@@ -99,7 +100,9 @@ export class SettingsHolder {
 
   /** Replaces all settings (missing keys fall back to defaults) and tells listeners. Throws ZodError. */
   set(values: unknown): Settings {
-    this.current = settingsSchema.parse(values ?? {});
+    const given = values && typeof values === "object" && !Array.isArray(values) ? (values as Record<string, unknown>) : {};
+    const withFallback = given.timezone === undefined && isValidTimeZone(this.fallbackTimeZone) ? { ...given, timezone: this.fallbackTimeZone } : given;
+    this.current = settingsSchema.parse(values === undefined || values === null ? {} : withFallback);
     for (const l of this.listeners) l();
     return this.current;
   }
