@@ -19,5 +19,8 @@ plugins:
   - name: todo
     url: http://todo:8081/mcp
     token_env: TODO_PLUGIN_TOKEN
+  - name: calendar
+    url: http://calendar:8083/mcp
+    token_env: CALENDAR_PLUGIN_TOKEN
 
 # Workflows live in workflows/<id>.yaml, one per file.
