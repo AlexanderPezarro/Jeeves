@@ -18,6 +18,7 @@ Android app ──events──▶ server (workflows, scheduler, Claude) ──MC
 | [`config.example/`](config.example) | Template for the live `config/` directory: globals and one file per workflow. |
 | [`plugins/todo/`](plugins/todo) | To-do plugin: chores, recurrence and completion, exposed as MCP tools. |
 | [`plugins/calendar/`](plugins/calendar) | Calendar plugin: read-only Google Calendar (iCal feed) events and free evening slots, exposed as MCP tools. |
+| [`plugins/meals/`](plugins/meals) | Meals plugin: recipes, dinner plan, pantry and shopping list, with the packs/cost/leftover maths done in code. |
 | [`web/`](web) | Web UI (Vite, React): dashboard, workflow editor, activity, plugins, settings. Served at `/admin` (browser, behind Authelia) and at `/app` (the phone app's built-in workflow editor). |
 | [`android/`](android) | Native Android app (Kotlin, Jetpack Compose): Today list, chat with Jeeves, activity, workflows, plugin settings, Wi-Fi trigger, notifications. |
 
@@ -189,6 +190,21 @@ the value to the plugin. Up to three calendars can be set (`calendar_url_1` to `
 for about 10 minutes; if Google can't be reached the last copy is served and marked `stale`, and
 Claude is told to say so. Google's own export can lag edits by a few hours, so treat the result as
 close, not real-time.
+### Meals plugin
+
+`plugins/meals` plans dinners for one person: what to eat tonight, when to cook, when to shop. It
+owns the data (recipes, ingredients, pantry lots with use-by dates, the plan, shops) and does the
+maths (packs, cost, leftovers, expiry, shop day); Claude only chooses meals, guided by the manifest
+`instructions`. Quantities stay in each ingredient's own unit (g, ml, each). It exposes `preview_plan`
+(cost against the weekly budget, leftover forecast, suggested shop day; writes nothing), `set_plan`,
+`mark_cooked`, `create_shop`, `finish_shop` and friends as `meals__*` tools.
+
+- **Views:** *Tonight* (Cooked / Skip) and *Shopping list* (Tick / Untick, then Finish shop) on Today.
+  Notifications about a night carry Cooked / Skip / Out (`item_id` is the date).
+- **Events:** `meals.cooked`, `meals.shop_finished`, `meals.plan_set`, posted to `JEEVES_URL`.
+- **Recipes page** (`/jeeves/ui`): recipes, ingredients (with an *estimated* flag for guessed prices) and the pantry.
+- **Workflows** in `config.example/workflows/`: `plan-my-week`, `dinner-tonight`, `shop-reminder` and an
+  optional `meals-waste-check`. Set `MEALS_PLUGIN_TOKEN` in `.env`; the data lives in the `meals-data` volume.
 
 ## Running it on the homeserver
 
@@ -272,6 +288,7 @@ of minutes after a trigger. Firebase push (instant delivery) is wired into the s
 ```bash
 cd plugins/todo && npm install && npm test    # including a real MCP round trip
 cd plugins/calendar && npm install && npm test   # feeds are faked; no network needed
+cd plugins/meals && npm install && npm test   # planner maths, store, MCP and Jeeves routes
 cd server && npm install && npm test          # Claude is scripted; e2e test runs the real to-do plugin
 cd web && npm install && npm run build && npm run test:e2e   # Playwright smoke test
 ```

@@ -1,0 +1,44 @@
+# Plans the week's dinners (and, if the exercise plugin is connected, fits training around them).
+# Runs on Sunday mornings; run it by hand from the web UI any time. Asking in chat works too: the
+# chat-reply workflow has the meals tools. This workflow writes nothing: it drafts a plan and messages
+# it, and chat-reply saves it (set_plan + create_shop) when I approve.
+#
+# The tool list is an allowlist of exact names. Tools from a plugin that isn't connected (calendar,
+# exercise) are simply not offered, so this works with only the meals plugin.
+id: plan-my-week
+description: Draft next week's dinners (and training), then message the plan for approval
+triggers:
+  - schedule: "0 10 * * sun"
+steps:
+  - id: plan
+    claude:
+      prompt: |
+        Plan my next 7 dinners, starting tomorrow.
+        1. If calendar tools are offered, read my calendar for those days and treat evenings with events
+           as busy or out. Otherwise ask me in the message which nights are out.
+        2. If exercise tools are offered, call exercise__get_week, then exercise__plan_sessions (pass busy nights as busy_dates) to place the week's training
+           sessions into my free evenings. Give training nights a quick recipe (low minutes) or a leftover.
+        3. Read the pantry and the existing plan, then the recipes. Use what expires soonest. Draft the 7
+           nights, leaving out the nights I'm out.
+        4. Call preview_plan and adjust until the estimated cost is within the weekly budget, or tell me why
+           it isn't. Don't save anything.
+        5. Send me one message with send_message: each night (day, recipe, start time), training sessions if
+           any, the shop day (and a second shop if one is flagged), the estimated cost against the budget,
+           leftovers I won't use and anything that will expire, and which ingredient prices are only estimates.
+           If exercise tools were offered, include my training goal and recent weekly session counts when the
+           results have them. End by asking me to approve or swap nights.
+      tools:
+        - meals__get_tonight
+        - meals__get_plan
+        - meals__list_recipes
+        - meals__get_recipe
+        - meals__get_pantry
+        - meals__get_shopping_list
+        - meals__preview_plan
+        - meals__save_recipe
+        - meals__upsert_ingredient
+        - calendar__list_events
+        - calendar__free_slots
+        - exercise__get_week
+        - exercise__plan_sessions
+        - send_message

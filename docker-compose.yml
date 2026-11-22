@@ -39,6 +39,7 @@ services:
     depends_on:
       - todo
       - calendar
+      - meals
     networks:
       default: {}
       # Caddy (~/projects/proxy) serves it at https://jeeves.alexanderpezarro.uk, Tailscale-only.
@@ -74,6 +75,19 @@ services:
     # compose network. It needs outbound internet to fetch the Google Calendar iCal feed. The feed
     # address is a secret (config/plugins/calendar.yaml -> CALENDAR_ICAL_URL in .env) and is pushed
     # to it by the server.
+  meals:
+    build: ./plugins/meals
+    restart: unless-stopped
+    environment:
+      TZ: Europe/London
+      MEALS_PLUGIN_TOKEN: ${MEALS_PLUGIN_TOKEN}
+      MEALS_DB_PATH: /data/meals.db
+      # Meal events (meals.cooked / meals.shop_finished / meals.plan_set) go to <JEEVES_URL>/plugin-events.
+      JEEVES_URL: http://server:8080
+      PORT: 8082
+    volumes:
+      - meals-data:/data
+    # Not published: only the server talks to the plugin, over the compose network.
 
   ntfy:
     image: binwiederhier/ntfy:v2.11.0
@@ -98,5 +112,6 @@ networks:
 volumes:
   jeeves-data:
   todo-data:
+  meals-data:
   ntfy-cache:
   ntfy-auth:

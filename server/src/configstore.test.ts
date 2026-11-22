@@ -51,13 +51,17 @@ describe("ConfigStore", () => {
     expect(store.current.workflows.map((w) => w.id)).toEqual([
       "arrive-home",
       "chat-reply",
+      "dinner-tonight",
       "laundry",
       "manual-plan",
+      "meals-waste-check",
       "missed-session",
+      "plan-my-week",
+      "shop-reminder",
       "training-today",
       "weekend-morning",
     ]);
-    expect(store.current.plugins.map((p) => p.name)).toEqual(["todo", "calendar", "exercise"]);
+    expect(store.current.plugins.map((p) => p.name)).toEqual(["todo", "calendar", "exercise", "meals"]);
     expect(store.current.plugin_settings.exercise).toMatchObject({ session_time: "18:00", hevy_poll_minutes: 15 });
   });
 

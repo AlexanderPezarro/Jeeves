@@ -25,5 +25,8 @@ plugins:
   - name: exercise
     url: http://workout-app:4321/mcp   # the workout-app container, over proxy_network
     token_env: EXERCISE_PLUGIN_TOKEN
+  - name: meals
+    url: http://meals:8082/mcp
+    token_env: MEALS_PLUGIN_TOKEN
 
 # Workflows live in workflows/<id>.yaml, one per file.
