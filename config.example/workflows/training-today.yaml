@@ -1,0 +1,39 @@
+# Training days: a morning heads-up, then a nudge at session time until Done or Skip.
+#
+# The wait below is a literal time: keep it equal to the exercise plugin's session_time setting
+# (plugins/exercise.yaml). Events only reach a run that is already listening, so cancel_on also
+# lists session_done: marking the session done before the nudge ends the run quietly.
+# A day with two pending sessions nudges about the first; the Today list shows both.
+id: training-today
+description: Morning heads-up, then nudge at session time until Done or Skip
+cooldown: daily
+triggers:
+  - schedule: "30 7 * * *"
+cancel_on:
+  - event: exercise.session_done
+    conditions: [{ path: event.item_id, eq: "{{steps.today.pending.0.item_id}}" }]
+  - event: exercise.session_missed
+    conditions: [{ path: event.item_id, eq: "{{steps.today.pending.0.item_id}}" }]
+steps:
+  - id: today
+    call: { plugin: exercise, tool: get_today }
+  - id: any
+    if: { path: steps.today.pending.0, exists: false }
+    then:
+      - id: rest
+        stop: { reason: Rest day or already done }
+  - id: heads-up
+    message:
+      text: "Today: {{steps.today.pending.0.label}} ({{steps.today.week.done}}/{{steps.today.week.goal}} this week)"
+      items: [{ plugin: exercise, item_id: "{{steps.today.pending.0.item_id}}", title: "{{steps.today.pending.0.label}}" }]
+  - id: session-time
+    wait: { until: "18:00" }
+  - id: nudge
+    message:
+      text: "Time for {{steps.today.pending.0.label}}"
+      level: loud
+      items: [{ plugin: exercise, item_id: "{{steps.today.pending.0.item_id}}", title: "{{steps.today.pending.0.label}}" }]
+      repeat: { every_minutes: 30, max: 4 }
+      until:
+        event: exercise.session_done
+        conditions: [{ path: event.item_id, eq: "{{steps.today.pending.0.item_id}}" }]

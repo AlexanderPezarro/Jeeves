@@ -220,3 +220,28 @@ curl --resolve ntfy.alexanderpezarro.uk:443:100.123.74.6 -d hi https://ntfy.alex
 - Uninstall ntfy: the server drops the endpoint on the next 404/410.
 - Large plans (over about 3 KB of JSON) are pushed as `{message_id, truncated}` and the app fetches the
   full message.
+
+## 6. External plugins (exercise / workout-app)
+
+A plugin doesn't have to live in this compose project. The exercise plugin is the standalone
+workout-app (`~/projects/workout-app`), which serves MCP at `/mcp` and the Jeeves contract at
+`/jeeves/*` when it has a `JEEVES_PLUGIN_TOKEN`. Deploy the workout-app change first: until its
+manifest is live Jeeves shows the plugin as disconnected and the other plugins keep working.
+
+- **Network.** Both projects attach the external `proxy_network`, so Jeeves reaches the app as
+  `http://workout-app:4321/mcp` (the container name) with no new networking, and the app posts events
+  back to `<JEEVES_URL>/plugin-events`. The `server` service has the alias `jeeves-server` on
+  `proxy_network`, so set `JEEVES_URL=http://jeeves-server:8080` in workout-app's `.env` rather than the
+  generic `server` name, which could collide with other projects on that shared network. Recreate the
+  server after pulling this change: `docker compose up -d server`.
+- **Token pairing.** One secret, two names: `EXERCISE_PLUGIN_TOKEN` here (`.env`, named by `token_env` in
+  `config/jeeves.yaml`) and `JEEVES_PLUGIN_TOKEN` in workout-app's `.env`. Use the same value.
+- **Config.** Copy the `exercise` entry from `config.example/jeeves.yaml`, `plugins/exercise.yaml` and the
+  `training-today` and `missed-session` workflows. `training-today` waits for a fixed `18:00`; keep it equal
+  to the plugin's `session_time` setting, since a `wait` can't follow a setting.
+- **Caddy.** The bearer token protects the endpoints, but the workout-app site block in
+  `~/projects/proxy/Caddyfile` should also refuse them from outside, e.g.
+  `@jeeves path /mcp /jeeves/*` with `respond @jeeves 404`. Jeeves doesn't go through Caddy.
+- **Plugin not on `proxy_network`.** Publish its port on the host and use the host address instead,
+  e.g. `url: http://<host>:4321/mcp`; bind it to the LAN or Tailscale address only, never `0.0.0.0` on a
+  public interface.

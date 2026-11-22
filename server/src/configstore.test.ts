@@ -48,7 +48,17 @@ describe("ConfigStore", () => {
     cpSync(new URL("../../config.example", import.meta.url), dir, { recursive: true });
     const store = open(dir);
     expect(store.errors).toEqual([]);
-    expect(store.current.workflows.map((w) => w.id)).toEqual(["arrive-home", "chat-reply", "laundry", "manual-plan", "weekend-morning"]);
+    expect(store.current.workflows.map((w) => w.id)).toEqual([
+      "arrive-home",
+      "chat-reply",
+      "laundry",
+      "manual-plan",
+      "missed-session",
+      "training-today",
+      "weekend-morning",
+    ]);
+    expect(store.current.plugins.map((p) => p.name)).toEqual(["todo", "calendar", "exercise"]);
+    expect(store.current.plugin_settings.exercise).toMatchObject({ session_time: "18:00", hevy_poll_minutes: 15 });
   });
 
   it("toggles enabled without losing comments or key order", () => {

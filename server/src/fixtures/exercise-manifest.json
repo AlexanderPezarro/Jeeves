@@ -1,0 +1,72 @@
+{
+  "name": "exercise",
+  "display_name": "Training",
+  "version": "1.0.0",
+  "ui": null,
+  "settings_schema": {
+    "type": "object",
+    "properties": {
+      "emit_events": { "type": "boolean", "title": "Send events to Jeeves", "default": true },
+      "hevy_poll_minutes": { "type": "integer", "title": "Hevy poll interval (minutes, 0 = off)", "default": 15, "minimum": 0 },
+      "session_time": { "type": "string", "title": "Session time (HH:MM)", "default": "18:00" },
+      "missed_sweep_time": { "type": "string", "title": "Missed-session sweep (HH:MM)", "default": "23:30" }
+    },
+    "additionalProperties": false
+  },
+  "events": [
+    {
+      "type": "session_done",
+      "title": "Session done",
+      "payload_schema": {
+        "type": "object",
+        "properties": {
+          "item_id": { "type": "string" },
+          "date": { "type": "string" },
+          "session_type": { "type": "string" },
+          "label": { "type": "string" },
+          "kind": { "type": "string" },
+          "source": { "type": "string" },
+          "week_done": { "type": "integer" },
+          "week_goal": { "type": "integer" },
+          "behind": { "type": "boolean" }
+        }
+      }
+    },
+    {
+      "type": "session_missed",
+      "title": "Session skipped or not done",
+      "payload_schema": {
+        "type": "object",
+        "properties": {
+          "item_id": { "type": "string" },
+          "date": { "type": "string" },
+          "session_type": { "type": "string" },
+          "label": { "type": "string" },
+          "kind": { "type": "string" },
+          "source": { "type": "string" },
+          "reason": { "type": "string", "enum": ["skipped", "unmarked"] },
+          "week_done": { "type": "integer" },
+          "week_goal": { "type": "integer" },
+          "behind": { "type": "boolean" }
+        }
+      }
+    }
+  ],
+  "steps": {
+    "get_today": { "title": "Today's training" },
+    "get_week": { "title": "This week's training" },
+    "mark_session": { "title": "Mark a session" },
+    "plan_sessions": { "title": "Propose a week" },
+    "move_session": { "title": "Move a session" },
+    "send_to_hevy": { "title": "Send to Hevy" },
+    "get_hevy_workouts": { "title": "Recent Hevy workouts" },
+    "sync_hevy": { "title": "Sync Hevy now" }
+  },
+  "views": [{ "id": "training", "title": "Training", "empty_text": "Rest day." }],
+  "item_actions": [
+    { "id": "done", "label": "Done", "style": "primary" },
+    { "id": "skip", "label": "Skip", "style": "text" },
+    { "id": "hevy", "label": "Send to Hevy", "style": "secondary" }
+  ],
+  "instructions": "Sessions are identified by item_id <date>|<session_type>; set plugin \"exercise\" and item_id on message items so the phone shows Done / Skip / Send to Hevy. The goal is frequency: always state it and the recent counts in nudges (\"2/3 this week; last 4 weeks 3, 2, 3, 3\"). Place sessions into free evenings from the calendar, make-ups first; propose with plan_sessions and apply with move_session only after the user agrees. Never silently drop a session: one that doesn't fit stays a make-up and is said so. Don't invent sessions on rest days."
+}
