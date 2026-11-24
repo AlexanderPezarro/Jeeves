@@ -87,6 +87,20 @@ class Prefs(context: Context) {
         get() = sp.getLong("last_read_message_id", 0L)
         set(v) = sp.edit { putLong("last_read_message_id", v) }
 
+    /**
+     * Highest message id of conversation [convId] that the chat screen has shown. A conversation with no
+     * marker of its own falls back to the old single marker, so the pre-conversations chat keeps its
+     * "New" divider position and doesn't light up as unread.
+     */
+    fun readUpTo(convId: Long): Long = readUpToOrFallback(
+        if (sp.contains("read_conv_$convId")) sp.getLong("read_conv_$convId", 0L) else null,
+        lastReadMessageId,
+    )
+
+    fun markRead(convId: Long, id: Long) {
+        if (id > readUpTo(convId)) sp.edit { putLong("read_conv_$convId", id) }
+    }
+
     /** Workflows pinned to the Today tab as quick-run buttons, in the order they were pinned. */
     var pinnedWorkflows: List<String>
         get() = sp.getString("pinned_workflows", null)
@@ -104,7 +118,10 @@ class Prefs(context: Context) {
         get() = sp.getInt("notified_update_code", 0)
         set(v) = sp.edit { putInt("notified_update_code", v) }
 
-    private companion object {
-        val shownLock = Any()
+    companion object {
+        /** The per-conversation marker if there is one, else the legacy global [legacy]. */
+        fun readUpToOrFallback(own: Long?, legacy: Long): Long = own ?: legacy
+
+        private val shownLock = Any()
     }
 }

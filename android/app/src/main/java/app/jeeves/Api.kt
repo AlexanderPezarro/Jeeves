@@ -82,7 +82,25 @@ data class ChatMessage(
     val level: String? = null,
     /** When a reminder was meant to ring (ISO). */
     val due_at: String? = null,
+    /** The conversation this message belongs to. Null on old servers. */
+    val conversation_id: Long? = null,
 )
+
+/** One chat conversation, as listed by /conversations. */
+@Serializable
+data class Conversation(
+    val id: Long,
+    val title: String? = null,
+    /** First line of the first message, the title until a real one is generated. */
+    val first_line: String? = null,
+    val preview: String? = null,
+    val last_message_at: String? = null,
+    val last_message_id: Long? = null,
+    val last_out_message_id: Long? = null,
+    val archived_at: String? = null,
+)
+
+@Serializable private data class ConversationsResponse(val conversations: List<Conversation>)
 
 @Serializable private data class VapidKeyResponse(val public_key: String)
 @Serializable private data class PairResponse(val device_id: Long, val token: String)
@@ -456,8 +474,22 @@ class Api(private val prefs: Prefs) {
         call("POST", "/messages/$id/snooze", buildJsonObject { put("minutes", minutes) })
     }
 
-    suspend fun messages(after: Long): List<ChatMessage> =
-        json.decodeFromString<MessagesResponse>(call("GET", "/messages?after=$after")).messages
+    suspend fun messages(after: Long, conversationId: Long? = null): List<ChatMessage> =
+        json.decodeFromString<MessagesResponse>(
+            call("GET", "/messages?after=$after" + (conversationId?.let { "&conversation_id=$it" } ?: "")),
+        ).messages
+
+    suspend fun conversations(archived: Boolean = false): List<Conversation> =
+        json.decodeFromString<ConversationsResponse>(call("GET", "/conversations?archived=$archived")).conversations
+
+    suspend fun createConversation(): Conversation =
+        json.decodeFromString(call("POST", "/conversations", buildJsonObject {}))
+
+    suspend fun updateConversation(id: Long, title: String? = null, archived: Boolean? = null): Conversation =
+        json.decodeFromString(call("PATCH", "/conversations/$id", buildJsonObject {
+            if (title != null) put("title", title)
+            if (archived != null) put("archived", archived)
+        }))
 
     /** Registers (or, with a null endpoint, clears) this phone's Web Push subscription. */
     suspend fun registerPush(endpoint: String?, p256dh: String? = null, auth: String? = null) {
@@ -479,9 +511,12 @@ class Api(private val prefs: Prefs) {
         if (e.code == 404) null else throw e
     }
 
-    suspend fun sendMessage(text: String) {
-        call("POST", "/messages", buildJsonObject { put("text", text) })
-    }
+    /** Sends a chat message. Without [conversationId] the server starts a conversation; the row says which. */
+    suspend fun sendMessage(text: String, conversationId: Long? = null): ChatMessage =
+        json.decodeFromString(call("POST", "/messages", buildJsonObject {
+            put("text", text)
+            if (conversationId != null) put("conversation_id", conversationId)
+        }))
 
     // --- Timeline and activity ---
 

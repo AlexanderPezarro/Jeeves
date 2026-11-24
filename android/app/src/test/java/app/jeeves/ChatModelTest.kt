@@ -1,6 +1,7 @@
 package app.jeeves
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.LocalDate
@@ -53,5 +54,41 @@ class ChatModelTest {
     @Test fun badTimestampsDontCrash() {
         val rows = chatRows(listOf(msg(1, "garbage"), msg(2, "garbage")), readUpTo = 0, zone = utc)
         assertEquals(listOf("day-null-1", "m-1", "m-2"), rows.map { it.key })
+    }
+
+    private fun conv(id: Long, title: String? = null, first: String? = null, at: String? = null, out: Long? = null, archived: String? = null) =
+        Conversation(id = id, title = title, first_line = first, last_message_at = at, last_out_message_id = out, archived_at = archived)
+
+    @Test fun displayTitleFallsBack() {
+        assertEquals("Groceries", conv(1, title = "Groceries", first = "buy milk").displayTitle())
+        assertEquals("buy milk", conv(1, first = "buy milk").displayTitle())
+        assertEquals("a".repeat(60), conv(1, first = "a".repeat(100)).displayTitle())
+        assertEquals("buy milk", conv(1, title = " ", first = "buy milk").displayTitle())
+        assertEquals("New conversation", conv(1).displayTitle())
+    }
+
+    @Test fun unreadOnlyCountsJeevesMessages() {
+        assertTrue(conv(1, out = 5).isUnread(4))
+        assertFalse(conv(1, out = 5).isUnread(5))
+        assertFalse(conv(1, out = null).isUnread(0)) // only your own messages
+    }
+
+    @Test fun conversationListSortsAndSplitsArchived() {
+        val convs = listOf(
+            conv(1, at = "2026-11-20T09:00:00Z", out = 3),
+            conv(2, at = "2026-11-22T09:00:00Z", out = 9),
+            conv(3, at = "2026-11-21T09:00:00Z", archived = "2026-11-21T10:00:00Z"),
+            conv(4, at = null),
+        )
+        val main = conversationList(convs) { id -> if (id == 2L) 9 else 0 }
+        assertEquals(listOf(2L, 1L, 4L), main.map { it.conversation.id })
+        assertEquals(listOf(false, true, false), main.map { it.unread })
+        assertEquals(listOf(3L), conversationList(convs, archived = true) { 0 }.map { it.conversation.id })
+    }
+
+    @Test fun readMarkerFallsBackToLegacy() {
+        assertEquals(42L, Prefs.readUpToOrFallback(null, 42))
+        assertEquals(7L, Prefs.readUpToOrFallback(7, 42))
+        assertEquals(0L, Prefs.readUpToOrFallback(0, 42))
     }
 }
