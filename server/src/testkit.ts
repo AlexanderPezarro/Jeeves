@@ -32,7 +32,7 @@ export const MANUAL_PLAN: WorkflowInput = {
   steps: [{ id: "plan", claude: { prompt: "Plan now." } }],
 };
 
-/** The default chat workflow: a chat message becomes message.received, answered by Claude with the recent chat. */
+/** The default chat workflow: a chat message becomes message.received, answered by Claude with the conversation. */
 export const CHAT_REPLY: WorkflowInput = {
   id: "chat-reply",
   cooldown: 0,
@@ -144,6 +144,8 @@ export interface SetupOptions {
   db?: Db;
   clock?: { now: Date };
   plugins?: PluginHost;
+  /** Conversation title generator; the default stub gives no title so tests never see a stray Claude call. */
+  titles?: (firstText: string) => Promise<string | null>;
 }
 
 export function setup(opts: SetupOptions = {}) {
@@ -163,7 +165,7 @@ export function setup(opts: SetupOptions = {}) {
   const plugins = opts.plugins ?? fake;
   const notifier = new RecordingNotifier();
   const claude = scriptedClaude(opts.script ?? []);
-  const agent = new Agent({ db, config, plugins, notifier, create: claude.create, now });
+  const agent = new Agent({ db, config, plugins, notifier, create: claude.create, now, titles: opts.titles ?? (async () => null) });
   const engine = new Engine(db, config, plugins, agent, now);
   const app = buildApp({ db, engine, pairingCode: "pair-me-please", store, config, plugins, now });
   return { clock, db, plugins: fake, notifier, claude, agent, engine, app, store, config };

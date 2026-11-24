@@ -26,6 +26,19 @@ export interface AgentDeps {
   /** Claude Code CLI path: uses the CLI's logged-in account instead of an API key. */
   cli?: CliRunner;
   now?: () => Date;
+  /** Makes a short conversation title from its first message; null means "no title". Defaults to a small Claude call. */
+  titles?: (firstText: string) => Promise<string | null>;
+}
+
+/** Cheap model for conversation titles. */
+export const TITLE_MODEL = "claude-haiku-4-5";
+const TITLE_SYSTEM = "You write short titles for chat conversations. Reply with the title only: 3 to 6 words, no quotes, no trailing punctuation.";
+
+export function cleanTitle(raw: string): string | null {
+  let t = raw.trim().split("\n")[0]?.trim() ?? "";
+  t = t.replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, "").replace(/[.!?:;,\s]+$/g, "").trim();
+  if (t.length > 60) t = t.slice(0, 60).trimEnd();
+  return t || null;
 }
 
 export interface RunRequest {
@@ -36,8 +49,12 @@ export interface RunRequest {
   model?: string;
   /** Overrides the global effort for this run. */
   effort?: Effort;
-  /** Include the recent chat (last 8 messages) in the prompt. */
+  /** Include every earlier message of the current conversation in the prompt. */
   history?: boolean;
+  /** The conversation this run belongs to. Absent: the run's workflow run decides, creating one on its first message. */
+  conversation_id?: number;
+  /** The incoming chat message, already in the prompt, so history leaves it out. */
+  exclude_message_id?: number;
   rule_id?: string;
   event_id?: number;
   workflow_run_id?: number;
@@ -152,6 +169,9 @@ interface RunScope {
   dryRun: boolean;
   allowed: Set<string>;
   recorded: RecordedAction[];
+  conversationId?: number;
+  workflowRunId?: number;
+  workflowId?: string;
 }
 
 /**
@@ -161,6 +181,9 @@ interface RunScope {
  */
 export class Agent {
   private readonly now: () => Date;
+  private readonly titling = new Set<number>();
+  /** In-flight title calls, so tests and shutdown can wait for them. */
+  readonly pendingTitles = new Set<Promise<unknown>>();
 
   get notifier(): Notifier {
     return this.deps.notifier;
@@ -207,13 +230,15 @@ export class Agent {
     const system = systemPrompt(config, (plugins.instructions?.() ?? []).filter((p) => offered.has(p.plugin)));
 
     const context = `It is ${local.weekday} ${local.date}, ${local.time} (${config.timezone}).`;
-    const history = req.history
-      ? db
-          .recentMessages(8)
-          .map((m) => `${m.direction === "in" ? "User" : "Jeeves"}: ${m.text}`)
-          .join("\n")
-      : "";
-    const userText = [context, history && `Recent conversation:\n${history}`, req.prompt].filter(Boolean).join("\n\n");
+    const conversationId = req.conversation_id ?? (req.workflow_run_id !== undefined ? db.conversationForWorkflowRun(req.workflow_run_id) ?? undefined : undefined);
+    const history =
+      req.history && conversationId
+        ? db
+            .conversationMessages(conversationId, { excludeId: req.exclude_message_id })
+            .map((m) => `${m.direction === "in" ? "User" : "Jeeves"}: ${m.text}`)
+            .join("\n")
+        : "";
+    const userText = [context, history && `Conversation so far:\n${history}`, req.prompt].filter(Boolean).join("\n\n");
 
     const runId = db.startRun({
       kind: req.kind,
@@ -224,7 +249,7 @@ export class Agent {
       input: userText,
       local_date: local.date,
     });
-    const scope: RunScope = { runId, dryRun: !!req.dryRun, allowed: new Set(tools.map((t) => t.name)), recorded: [] };
+    const scope: RunScope = { runId, dryRun: !!req.dryRun, allowed: new Set(tools.map((t) => t.name)), recorded: [], conversationId, workflowRunId: req.workflow_run_id, workflowId: req.rule_id };
     const withRecorded = (r: RunResult): RunResult => (scope.dryRun ? { ...r, recorded: scope.recorded } : r);
 
     if (this.deps.cli) return withRecorded(await this.runCli({ model, effort, system }, scope, userText, tools));
@@ -366,7 +391,9 @@ export class Agent {
         scope.recorded.push({ kind: "followup", text: String(input.message), in_minutes: Number(input.in_minutes) });
       } else {
         const about = typeof input.plugin === "string" && input.item_id !== null && input.item_id !== undefined ? { plugin: input.plugin, item_id: String(input.item_id) } : {};
-        this.deps.db.addJob(at, "followup", { message: input.message, ...about });
+        // With a workflow run, the conversation resolves when the follow-up fires, so none is created for nothing.
+        const where = scope.workflowRunId !== undefined ? { workflow_run_id: scope.workflowRunId } : { conversation_id: this.resolveConversation(scope) };
+        this.deps.db.addJob(at, "followup", { message: input.message, ...about, ...where });
       }
       return { text: `Scheduled for ${at.toISOString()}.`, isError: false };
     }
@@ -380,7 +407,16 @@ export class Agent {
       scope.recorded.push({ kind: "message", text, ...(items.length ? { items } : {}) });
       return;
     }
-    await this.sendMessage(text, items, scope.runId);
+    await this.sendMessage(text, items, scope.runId, { conversation_id: this.resolveConversation(scope) });
+  }
+
+  /** The conversation a run's messages go to; created on first use. */
+  private resolveConversation(scope: RunScope): number {
+    if (scope.conversationId !== undefined) return scope.conversationId;
+    const { db } = this.deps;
+    if (scope.workflowRunId !== undefined) scope.conversationId = db.conversationFor(scope.workflowRunId, scope.workflowId ?? null, this.now());
+    else scope.conversationId = db.createConversation({ source_workflow_id: scope.workflowId ?? null, now: this.now() }).id;
+    return scope.conversationId;
   }
 
   /** An item about a plugin's item gets that plugin's notification buttons (manifest `item_actions`). */
@@ -394,10 +430,13 @@ export class Agent {
     text: string,
     items: PlanItem[],
     runId: number | null = null,
-    extra: { level?: ReminderLevel | null; due_at?: string | null; job_id?: number | null } = {},
+    extra: { level?: ReminderLevel | null; due_at?: string | null; job_id?: number | null; conversation_id?: number | null } = {},
   ) {
     const withActions = items.map((i) => this.withActions(i));
-    const msg = this.deps.db.addMessage("out", text, withActions.length ? withActions : null, runId, this.now(), extra);
+    // No conversation given: this message starts its own (e.g. a plugin reminder).
+    const conversation_id = extra.conversation_id ?? this.deps.db.createConversation({ now: this.now() }).id;
+    const msg = this.deps.db.addMessage("out", text, withActions.length ? withActions : null, runId, this.now(), { ...extra, conversation_id });
+    this.maybeTitle(conversation_id);
     try {
       await this.deps.notifier.notify(msg);
     } catch (e) {
@@ -405,5 +444,64 @@ export class Agent {
       console.warn(`Push failed for message ${msg.id}: ${(e as Error).message}`);
     }
     return msg;
+  }
+
+  /** Fire-and-forget: gives a conversation a title from its first message. Never throws. */
+  maybeTitle(convId: number): void {
+    const p = this.title(convId)
+      .catch((e) => console.warn(`Title for conversation ${convId} failed: ${(e as Error).message}`))
+      .finally(() => this.pendingTitles.delete(p));
+    this.pendingTitles.add(p);
+  }
+
+  private async title(convId: number): Promise<void> {
+    const { db } = this.deps;
+    if (this.titling.has(convId) || db.getConversation(convId)?.title) return;
+    const local = localTime(this.now(), this.config.timezone);
+    if (db.runsOn(local.date) >= this.config.max_runs_per_day) return;
+    const first = db.conversationMessages(convId, { limit: 1 })[0];
+    if (!first) return;
+    this.titling.add(convId);
+    try {
+      const raw = await (this.deps.titles ?? ((t: string) => this.generateTitle(t, local.date)))(first.text);
+      const title = raw ? cleanTitle(raw) : null;
+      if (title) db.setTitleIfUnset(convId, title);
+    } finally {
+      this.titling.delete(convId);
+    }
+  }
+
+  /** The default title generator: one tool-less turn on a small model, recorded as a "title" run. */
+  private async generateTitle(firstText: string, localDate: string): Promise<string | null> {
+    const { db, create, cli } = this.deps;
+    if (!cli && !create) return null;
+    const prompt = `Give a 3-6 word title for a chat that starts with:\n\n${firstText.slice(0, 1000)}\n\nReply with the title only.`;
+    const runId = db.startRun({ kind: "title", model: TITLE_MODEL, input: prompt, local_date: localDate });
+    try {
+      if (cli) {
+        const out = await cli({
+          model: TITLE_MODEL,
+          effort: "low",
+          system: TITLE_SYSTEM,
+          prompt,
+          tools: [],
+          maxTurns: 1,
+          callTool: async () => ({ text: "No tools available", isError: true }),
+        });
+        db.finishRun(runId, { status: out.error ? "error" : "ok", transcript: out.transcript, input_tokens: out.inputTokens, output_tokens: out.outputTokens, ...(out.error ? { error: out.error } : {}) });
+        return out.error ? null : out.finalText;
+      }
+      const messages: Anthropic.Beta.Messages.BetaMessageParam[] = [{ role: "user", content: prompt }];
+      const res = await create!({ model: TITLE_MODEL, max_tokens: 50, output_config: { effort: "low" }, system: TITLE_SYSTEM, tools: [], messages });
+      db.finishRun(runId, { status: "ok", transcript: [...messages, { role: "assistant", content: res.content }], input_tokens: res.usage.input_tokens, output_tokens: res.usage.output_tokens });
+      return res.content
+        .filter((b): b is Anthropic.Beta.Messages.BetaTextBlock => b.type === "text")
+        .map((b) => b.text)
+        .join("")
+        .trim();
+    } catch (e) {
+      db.finishRun(runId, { status: "error", transcript: [], input_tokens: 0, output_tokens: 0, error: (e as Error).message });
+      throw e;
+    }
   }
 }

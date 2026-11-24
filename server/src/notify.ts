@@ -32,6 +32,7 @@ export function pushPayload(message: MessageRow): {
   items: NonNullable<MessageRow["items"]>;
   level?: string;
   due_at?: string;
+  conversation_id?: number;
 } {
   return {
     message_id: message.id,
@@ -39,6 +40,7 @@ export function pushPayload(message: MessageRow): {
     items: message.items ?? [],
     ...(message.level ? { level: message.level } : {}),
     ...(message.due_at ? { due_at: message.due_at } : {}),
+    ...(message.conversation_id !== null ? { conversation_id: message.conversation_id } : {}),
   };
 }
 
@@ -89,6 +91,7 @@ export class FcmNotifier implements Notifier {
         items: JSON.stringify(pushPayload(message).items),
         ...(message.level ? { level: message.level } : {}),
         ...(message.due_at ? { due_at: message.due_at } : {}),
+        ...(message.conversation_id !== null ? { conversation_id: String(message.conversation_id) } : {}),
       },
     });
     res.responses.forEach((r, i) => {

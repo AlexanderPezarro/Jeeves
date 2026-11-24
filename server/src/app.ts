@@ -148,15 +148,40 @@ export function buildApp({ db, engine, pairingCode, store, config = store, plugi
     // Plugin lists (the app's Today tab) and the buttons on their items and on notifications.
     if (managed) registerViewRoutes(authed, { plugins: managed, db, now: clock, cancelRun: (id, reason) => engine.runner.cancel(id, reason) });
 
-    authed.get("/messages", async (req) => {
-      const after = Number((req.query as { after?: string }).after ?? 0) || 0;
-      return { messages: db.messagesAfter(after) };
+    authed.get("/messages", async (req, reply) => {
+      const q = req.query as { after?: string; conversation_id?: string };
+      const after = Number(q.after ?? 0) || 0;
+      if (q.conversation_id === undefined) return { messages: db.messagesAfter(after) };
+      const conv = Number(q.conversation_id);
+      if (!Number.isInteger(conv) || !db.getConversation(conv)) return reply.code(404).send({ error: "not_found" });
+      return { messages: db.conversationMessages(conv, { afterId: after, limit: 100 }) };
     });
 
     authed.post("/messages", async (req, reply) => {
-      const body = z.object({ text: z.string().min(1).max(2000) }).safeParse(req.body);
+      const body = z.object({ text: z.string().min(1).max(2000), conversation_id: z.number().int().positive().nullish() }).safeParse(req.body);
       if (!body.success) return reply.code(400).send({ error: "text is required" });
-      return engine.handleUserMessage(body.data.text, req.device!.id);
+      if (body.data.conversation_id != null && !db.getConversation(body.data.conversation_id)) return reply.code(404).send({ error: "not_found" });
+      return engine.handleUserMessage(body.data.text, req.device!.id, body.data.conversation_id);
+    });
+
+    authed.get("/conversations", async (req) => {
+      const archived = (req.query as { archived?: string }).archived === "true";
+      return { conversations: db.listConversations({ archived }) };
+    });
+
+    authed.post("/conversations", async (req, reply) => {
+      const body = z.object({ title: z.string().trim().min(1).max(80).optional() }).safeParse(req.body ?? {});
+      if (!body.success) return reply.code(400).send({ error: "title must be 1 to 80 characters" });
+      return db.createConversation({ title: body.data.title, now: clock() });
+    });
+
+    authed.patch("/conversations/:id", async (req, reply) => {
+      const id = Number((req.params as { id: string }).id);
+      const body = z.object({ title: z.string().trim().min(1).max(80).optional(), archived: z.boolean().optional() }).safeParse(req.body);
+      if (!Number.isInteger(id) || !body.success) return reply.code(400).send({ error: "title must be 1 to 80 characters; archived must be a boolean" });
+      const row = db.updateConversation(id, body.data, clock());
+      if (!row) return reply.code(404).send({ error: "not_found" });
+      return row;
     });
 
     /** Re-queues a fired reminder `minutes` from now under the same plugin and key. */
