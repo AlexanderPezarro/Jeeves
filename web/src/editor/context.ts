@@ -87,4 +87,7 @@ export function uniqueId(base: string, taken: Set<string>): string {
 export const BUILTIN_CLAUDE_TOOLS = [
   { name: "send_message", description: "Send you a message (the plan)" },
   { name: "schedule_followup", description: "Schedule a follow-up message" },
+  { name: "set_reminder", description: "Set a one-off reminder at a date and time" },
+  { name: "list_reminders", description: "List one-off reminders" },
+  { name: "cancel_reminder", description: "Cancel a one-off reminder" },
 ];

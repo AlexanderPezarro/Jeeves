@@ -43,7 +43,7 @@ export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
 export type Step =
   | { id: string; call: { plugin: string; tool: string; args?: Record<string, unknown> } }
-  | { id: string; claude: { prompt: string; tools?: string[]; model?: string; effort?: Effort; history?: boolean } }
+  | { id: string; claude: { prompt: string; tools?: string[]; model?: string; effort?: Effort; history?: boolean; workflows?: boolean } }
   | {
       id: string;
       message: {

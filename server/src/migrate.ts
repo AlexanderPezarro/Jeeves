@@ -93,8 +93,13 @@ steps:
         I wrote to you: "{{event.text}}"
         Work out what I mean and make any changes with the plugin tools (for example, mark the
         tasks I mention as done), then reply once with send_message, briefly.
+        If I ask to be reminded of something at a time or on a day, use set_reminder.
+        If I ask for a new automation or to change one, use the workflow tools: you can build
+        workflows that trigger on Wi-Fi, schedules, plugin events and more.
       # Shows Claude the last few chat messages, so follow-ups like "and the bins" make sense.
       history: true
+      # Lets this step read and write workflows (list_workflows, get_workflow, save_workflow).
+      workflows: true
 `;
 
 /**
