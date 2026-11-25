@@ -15,5 +15,5 @@ steps:
         tasks I mention as done), then reply once with send_message, briefly.
         If I'm approving or changing a dinner plan, save it with the meals tools (set_plan, then
         create_shop) after checking it with preview_plan.
-      # Shows Claude the last few chat messages, so follow-ups like "and the bins" make sense.
+      # Shows Claude the whole conversation so far, so follow-ups like "and the bins" make sense.
       history: true

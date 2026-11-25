@@ -13,7 +13,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Card
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.CardDefaults
@@ -37,6 +41,8 @@ import androidx.compose.ui.unit.dp
 import app.jeeves.Api
 import app.jeeves.ChatMessage
 import app.jeeves.ChatRow
+import app.jeeves.Conversation
+import app.jeeves.displayTitle
 import app.jeeves.chatRows
 import app.jeeves.liveMessageItems
 import app.jeeves.ItemAction
@@ -48,21 +54,32 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @Composable
-fun ChatScreen(prefs: Prefs, modifier: Modifier = Modifier) {
+fun ChatScreen(
+    prefs: Prefs,
+    conversationId: Long?,
+    onBack: () -> Unit,
+    onConversationCreated: (Long) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val api = remember { Api(prefs) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
-    var messages by remember { mutableStateOf<List<ChatMessage>>(emptyList()) }
+    // Everything per-thread restarts when another conversation opens (or a new one gets its id).
+    var messages by remember(conversationId) { mutableStateOf<List<ChatMessage>>(emptyList()) }
+    var meta by remember(conversationId) { mutableStateOf<Conversation?>(null) }
+    var menuOpen by remember { mutableStateOf(false) }
+    var renaming by remember { mutableStateOf(false) }
+    var sending by remember { mutableStateOf(false) }
     var draft by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     // Where reading had got to when the chat opened; the "New" divider goes after it. Captured once,
     // so the divider stays put while the screen is open.
-    val readUpTo = remember { prefs.lastReadMessageId }
+    val readUpTo = remember(conversationId) { conversationId?.let { prefs.readUpTo(it) } ?: 0L }
     // Buttons already used this session, by "messageId-itemIndex" -> action id. Held here, not in
     // each bubble, because the list forgets bubbles that scroll out of view.
-    var used by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
-    var firstLoad by remember { mutableStateOf(true) }
+    var used by remember(conversationId) { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var firstLoad by remember(conversationId) { mutableStateOf(true) }
 
     val rows = chatRows(messages, readUpTo)
     val live = liveMessageItems(messages, LocalDate.now())
@@ -71,15 +88,25 @@ fun ChatScreen(prefs: Prefs, modifier: Modifier = Modifier) {
         m.items.orEmpty().indices.any { i -> (m.id to i) in live && "${m.id}-$i" !in used }
     }
 
+    suspend fun loadMeta() {
+        val id = conversationId ?: return
+        try {
+            meta = (api.conversations(false) + api.conversations(true)).firstOrNull { it.id == id }
+        } catch (_: Exception) {
+        }
+    }
+
     suspend fun load() {
+        // A conversation that doesn't exist yet has nothing to load.
+        val convId = conversationId ?: return
         try {
             val after = messages.lastOrNull()?.id ?: 0L
-            val fresh = api.messages(after)
+            val fresh = api.messages(after, convId)
             if (fresh.isNotEmpty()) {
                 messages = messages + fresh
                 // Anything seen here should not pop up again as a notification, and counts as read.
                 prefs.lastMessageId = maxOf(prefs.lastMessageId, fresh.last().id)
-                prefs.lastReadMessageId = maxOf(prefs.lastReadMessageId, fresh.last().id)
+                prefs.markRead(convId, fresh.last().id)
                 val laidOut = chatRows(messages, readUpTo)
                 // On opening, land on the first unread message; after that, follow new ones.
                 val divider = laidOut.indexOf(ChatRow.New)
@@ -95,14 +122,70 @@ fun ChatScreen(prefs: Prefs, modifier: Modifier = Modifier) {
     }
 
     // Refresh every few seconds while the chat is open, so replies appear quickly.
-    LaunchedEffect(Unit) {
+    LaunchedEffect(conversationId) {
         while (true) {
             load()
+            loadMeta()
             delay(5_000)
         }
     }
 
     Column(modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, contentDescription = "Back") }
+            Text(
+                meta?.displayTitle() ?: "New conversation",
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            if (conversationId != null) {
+                IconButton(onClick = { menuOpen = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More") }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(text = { Text("Rename") }, onClick = { menuOpen = false; renaming = true })
+                    DropdownMenuItem(
+                        text = { Text(if (meta?.archived_at != null) "Unarchive" else "Archive") },
+                        onClick = {
+                            menuOpen = false
+                            val archive = meta?.archived_at == null
+                            scope.launch {
+                                try {
+                                    meta = api.updateConversation(conversationId, archived = archive)
+                                    if (archive) onBack()
+                                } catch (e: Exception) {
+                                    error = e.message
+                                }
+                            }
+                        },
+                    )
+                }
+            }
+        }
+        if (renaming && conversationId != null) {
+            RenameDialog(
+                current = meta?.displayTitle().orEmpty(),
+                onDismiss = { renaming = false },
+                onSave = { title ->
+                    renaming = false
+                    scope.launch {
+                        try {
+                            meta = api.updateConversation(conversationId, title = title)
+                        } catch (e: Exception) {
+                            error = e.message
+                        }
+                    }
+                },
+            )
+        }
+        if (conversationId == null && messages.isEmpty()) {
+            Text(
+                "Say something to start a new conversation.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+        }
         needsYou?.let { m ->
             val open = m.items.orEmpty().indices.count { i -> (m.id to i) in live && "${m.id}-$i" !in used }
             Card(
@@ -165,18 +248,23 @@ fun ChatScreen(prefs: Prefs, modifier: Modifier = Modifier) {
                 modifier = Modifier.weight(1f),
             )
             IconButton(
-                enabled = draft.isNotBlank(),
+                // Off while a send is in flight, so two quick sends can't start two conversations.
+                enabled = draft.isNotBlank() && !sending,
                 onClick = {
                     val text = draft.trim()
                     draft = ""
+                    sending = true
                     scope.launch {
                         try {
-                            api.sendMessage(text)
+                            val sent = api.sendMessage(text, conversationId)
                             Work.pollSoon(context)
-                            load()
+                            val created = sent.conversation_id
+                            if (conversationId == null && created != null) onConversationCreated(created) else load()
                         } catch (e: Exception) {
                             draft = text
                             error = e.message
+                        } finally {
+                            sending = false
                         }
                     }
                 },

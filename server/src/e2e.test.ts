@@ -133,7 +133,7 @@ async function mealsSetup(workflows: string[], script: Parameters<typeof scripte
   store.on("reload", () => host.setPlugins(store.current.plugins));
   const notifier = new RecordingNotifier();
   const claude = scriptedClaude(script);
-  const agent = new Agent({ db, config: store, plugins: host, notifier, create: claude.create, now });
+  const agent = new Agent({ db, config: store, plugins: host, notifier, create: claude.create, now, titles: async () => null });
   const engine = new Engine(db, store, host, agent, now);
   const jeeves = buildApp({ db, engine, pairingCode: "pair-me-please", store, plugins: host, now });
   const jeevesUrl = await jeeves.listen({ host: "127.0.0.1", port: 0 });

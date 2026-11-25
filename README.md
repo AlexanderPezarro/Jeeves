@@ -20,7 +20,7 @@ Android app ──events──▶ server (workflows, scheduler, Claude) ──MC
 | [`plugins/calendar/`](plugins/calendar) | Calendar plugin: read-only Google Calendar (iCal feed) events and free evening slots, exposed as MCP tools. |
 | [`plugins/meals/`](plugins/meals) | Meals plugin: recipes, dinner plan, pantry and shopping list, with the packs/cost/leftover maths done in code. |
 | [`web/`](web) | Web UI (Vite, React): dashboard, workflow editor, activity, plugins, settings. Served at `/admin` (browser, behind Authelia) and at `/app` (the phone app's built-in workflow editor). |
-| [`android/`](android) | Native Android app (Kotlin, Jetpack Compose): Today list (with what's coming up and pinned workflows), chat with Jeeves, workflows (with history and the activity log), plugin settings, Wi-Fi trigger, notifications. |
+| [`android/`](android) | Native Android app (Kotlin, Jetpack Compose): Today list (with what's coming up and pinned workflows), conversations with Jeeves (a list of threads, each with its own history), workflows (with history and the activity log), plugin settings, Wi-Fi trigger, notifications. |
 
 ## How it works
 
@@ -70,7 +70,7 @@ steps:
 
 Step types: `call: {plugin, tool, args}`, `claude: {prompt, tools?, model?, effort?, history?}`
 (`tools` is an allowlist; `model`/`effort` override the globals for that step; `history: true`
-adds the last 8 chat messages),
+adds every earlier message of the current conversation),
 `message: {text, items?, level?, repeat?: {every_minutes, max?}, until?: {event, conditions?}}`
 (`level` is notify, loud or alarm; with `until` the run pauses after sending until that event
 arrives, and `repeat` re-sends every N minutes meanwhile, ending the run as `stopped` one interval
@@ -236,6 +236,20 @@ to sit behind Caddy and Authelia: see [docs/deploy.md](docs/deploy.md) for the p
 - `POST /simulate` says which workflows an event would fire, without storing or running
   anything; `POST /workflows/:id/run` runs one now, and `{"dry_run": true}` records messages
   instead of sending them and only calls read-only tools.
+
+## Conversations
+
+Chat is split into conversations. A message you send starts one (or continues the one you name),
+and a workflow run keeps all its messages in one conversation: the one the chat message came from,
+or a new one created on its first message. Each conversation gets a short title from a small model
+(recorded as a `title` run, not counted against `max_runs_per_day`).
+
+- `GET /conversations?archived=true|false`: threads, newest activity first, with `title`,
+  `first_line`, `preview`, `last_message_id` and `last_out_message_id`.
+- `POST /conversations` (optional `{title}`), `PATCH /conversations/:id` with `{title?, archived?}`.
+  Any new message un-archives a conversation.
+- `GET /messages?after=&conversation_id=` (without `conversation_id`: every message) and
+  `POST /messages` with `{text, conversation_id?}`.
 
 The web UI and the app's Today (Coming up) and Workflows (history, activity log) screens are built on these.
 

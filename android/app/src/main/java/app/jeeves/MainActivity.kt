@@ -5,6 +5,7 @@ import android.os.Build
 import android.os.Bundle
 import kotlinx.coroutines.launch
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
@@ -30,6 +31,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.lifecycleScope
 import app.jeeves.ui.ChatScreen
+import app.jeeves.ui.ConversationsScreen
 import app.jeeves.ui.PluginsScreen
 import app.jeeves.ui.SettingsScreen
 import app.jeeves.ui.TodayScreen
@@ -40,6 +42,9 @@ import app.jeeves.ui.loadAttention
 class MainActivity : ComponentActivity() {
     private var tab by mutableIntStateOf(TAB_TODAY)
     private var paired by mutableStateOf(false)
+    /** The conversation open on the Chat tab, or null for the list (or a new, unsent one: [composingNew]). */
+    private var openConversation by mutableStateOf<Long?>(null)
+    private var composingNew by mutableStateOf(false)
     /** A page opened from Settings (Plugins), or null for Settings itself. */
     private var settingsPage by mutableStateOf<String?>(null)
     /** How many things need a look on the Workflows tab (failed runs, broken files, plugins down). */
@@ -50,6 +55,7 @@ class MainActivity : ComponentActivity() {
         val prefs = Prefs(this)
         paired = prefs.isPaired
         tab = if (!paired) TAB_SETTINGS else intent.getIntExtra(EXTRA_TAB, TAB_TODAY)
+        if (paired) openFromIntent(intent)
 
         setContent {
             val colors = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) dynamicLightColorScheme(this) else lightColorScheme()
@@ -93,8 +99,23 @@ class MainActivity : ComponentActivity() {
                     }
                     val modifier = Modifier.padding(padding)
                     when (tab) {
-                        TAB_TODAY -> TodayScreen(prefs, modifier, onOpenChat = { tab = TAB_CHAT })
-                        TAB_CHAT -> ChatScreen(prefs, modifier)
+                        TAB_TODAY -> TodayScreen(prefs, modifier, onOpenChat = { tab = TAB_CHAT; openConversation = null; composingNew = false })
+                        TAB_CHAT -> if (openConversation != null || composingNew) {
+                            BackHandler { openConversation = null; composingNew = false }
+                            ChatScreen(
+                                prefs, openConversation,
+                                onBack = { openConversation = null; composingNew = false },
+                                onConversationCreated = { openConversation = it; composingNew = false },
+                                modifier = modifier,
+                            )
+                        } else {
+                            ConversationsScreen(
+                                prefs,
+                                onOpen = { openConversation = it },
+                                onNew = { composingNew = true },
+                                modifier = modifier,
+                            )
+                        }
                         TAB_WORKFLOWS -> WorkflowsScreen(prefs, modifier, onAttention = { attention = it })
                         else -> when (settingsPage) {
                             PAGE_PLUGINS -> PluginsScreen(prefs, modifier, onBack = { settingsPage = null })
@@ -122,11 +143,26 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        if (paired) tab = intent.getIntExtra(EXTRA_TAB, tab)
+        if (paired) {
+            tab = intent.getIntExtra(EXTRA_TAB, tab)
+            openFromIntent(intent)
+        }
+    }
+
+    /** A notification for a conversation opens that thread. */
+    private fun openFromIntent(intent: Intent) {
+        if (!intent.hasExtra(EXTRA_CONVERSATION)) return
+        val id = intent.getLongExtra(EXTRA_CONVERSATION, 0L)
+        if (id > 0) {
+            tab = TAB_CHAT
+            openConversation = id
+            composingNew = false
+        }
     }
 
     companion object {
         const val EXTRA_TAB = "tab"
+        const val EXTRA_CONVERSATION = "conversation_id"
         const val TAB_TODAY = 0
         const val TAB_CHAT = 1
         const val TAB_WORKFLOWS = 2

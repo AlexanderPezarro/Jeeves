@@ -148,7 +148,7 @@ describe("Claude Code CLI backend", () => {
       const out = await steps(input);
       return { transcript: [], inputTokens: 120, outputTokens: 30, finalText: out.finalText ?? "", ...(out.error ? { error: out.error } : {}) };
     };
-    const agent = new Agent({ db, config, plugins, notifier, cli, now });
+    const agent = new Agent({ db, config, plugins, notifier, cli, now, titles: async () => null });
     const engine = new Engine(db, config, plugins, agent, now);
     return { db, plugins, notifier, engine, inputs };
   }
@@ -276,8 +276,9 @@ describe("the LLM step and chat", () => {
       ],
       script: [reply("end_turn", [{ type: "text", text: "done" }])],
     });
-    s.db.addMessage("out", "Earlier reply", null, null, s.clock.now);
-    s.engine.handleEvent("manual.plan", {}, null);
+    const conv = s.db.createConversation({ now: s.clock.now });
+    s.db.addMessage("out", "Earlier reply", null, null, s.clock.now, { conversation_id: conv.id });
+    s.engine.handleEvent("manual.plan", { conversation_id: conv.id }, null);
     await s.engine.idle();
     const [req] = s.claude.requests;
     expect(req).toMatchObject({ model: "claude-fable-5-2", output_config: { effort: "high" } });
@@ -286,17 +287,28 @@ describe("the LLM step and chat", () => {
   });
 
   it("turns a chat message into message.received, answered by the chat workflow", async () => {
-    const s = setup({ script: [reply("tool_use", [toolUse("t1", "send_message", { text: "On it.", items: [] })]), reply("end_turn", [])] });
+    const s = setup({
+      script: [
+        reply("tool_use", [toolUse("t1", "send_message", { text: "On it.", items: [] })]),
+        reply("end_turn", []),
+        reply("tool_use", [toolUse("t2", "send_message", { text: "Nice.", items: [] })]),
+        reply("end_turn", []),
+      ],
+    });
     const headers = await pair(s.app);
-    await s.app.inject({ method: "POST", url: "/messages", headers, payload: { text: "dishes done" } });
+    const first = await s.app.inject({ method: "POST", url: "/messages", headers, payload: { text: "hello" } });
+    const convId = first.json().conversation_id;
+    await s.engine.idle();
+    await s.app.inject({ method: "POST", url: "/messages", headers, payload: { text: "dishes done", conversation_id: convId } });
     await s.engine.idle();
     const ev = s.db.lastEvent("message.received", "9999");
-    expect(ev?.payload).toMatchObject({ text: "dishes done" });
+    expect(ev?.payload).toMatchObject({ text: "dishes done", conversation_id: convId });
     expect(s.db.workflowRuns()[0]).toMatchObject({ workflow_id: "chat-reply", status: "ok" });
-    const input = JSON.stringify(s.claude.requests[0].messages[0].content);
+    const input = JSON.stringify(s.claude.requests[2].messages[0].content);
     expect(input).toContain('I wrote: \\"dishes done\\"');
-    expect(input).toContain("User: dishes done");
-    expect(s.notifier.sent.map((m) => m.text)).toEqual(["On it."]);
+    expect(input).toContain("User: hello\\nJeeves: On it.");
+    expect(input).not.toContain("User: dishes done");
+    expect(s.notifier.sent.map((m) => m.text)).toEqual(["On it.", "Nice."]);
   });
 
   it("says so when no workflow answers a chat message", async () => {

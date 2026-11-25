@@ -72,3 +72,21 @@ fun liveMessageItems(messages: List<ChatMessage>, today: LocalDate, zone: ZoneId
     }
     return newest.values.toSet()
 }
+
+/** What the conversation list shows: the title, or the first line of the chat, or a placeholder. */
+fun Conversation.displayTitle(): String =
+    title?.takeIf { it.isNotBlank() } ?: first_line?.takeIf { it.isNotBlank() }?.take(60) ?: "New conversation"
+
+/** A Jeeves message newer than [readUpTo] makes a conversation unread; your own messages never do. */
+fun Conversation.isUnread(readUpTo: Long): Boolean = (last_out_message_id ?: 0L) > readUpTo
+
+data class ConversationRow(val conversation: Conversation, val unread: Boolean)
+
+/**
+ * [convs] newest activity first, each flagged unread against [readUpTo] (a read marker per conversation id).
+ * Only archived conversations when [archived] is true, otherwise only the live ones.
+ */
+fun conversationList(convs: List<Conversation>, archived: Boolean = false, readUpTo: (Long) -> Long): List<ConversationRow> =
+    convs.filter { (it.archived_at != null) == archived }
+        .sortedByDescending { it.last_message_at ?: "" }
+        .map { ConversationRow(it, it.isUnread(readUpTo(it.id))) }

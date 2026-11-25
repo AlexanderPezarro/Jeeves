@@ -89,7 +89,9 @@ object Notifications {
         val notificationId = message.id.toInt()
         val open = PendingIntent.getActivity(
             context, notificationId,
-            Intent(context, MainActivity::class.java).putExtra(MainActivity.EXTRA_TAB, MainActivity.TAB_CHAT),
+            Intent(context, MainActivity::class.java)
+                .putExtra(MainActivity.EXTRA_TAB, MainActivity.TAB_CHAT)
+                .apply { message.conversation_id?.let { putExtra(MainActivity.EXTRA_CONVERSATION, it) } },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 

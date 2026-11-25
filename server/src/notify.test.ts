@@ -45,6 +45,14 @@ describe("WebPushNotifier", () => {
     warn.mockRestore();
   });
 
+  it("includes the conversation id in the web push payload", async () => {
+    const db = setup(1);
+    const send = vi.fn().mockResolvedValue({});
+    const conv = db.createConversation();
+    await new WebPushNotifier(db, vapid, send).notify(db.addMessage("out", "x", null, null, new Date(), { conversation_id: conv.id }));
+    expect(JSON.parse(send.mock.calls[0][1])).toMatchObject({ conversation_id: conv.id });
+  });
+
   it("sends a truncated payload when the items are too big", async () => {
     const db = setup(1);
     const send = vi.fn().mockResolvedValue({});

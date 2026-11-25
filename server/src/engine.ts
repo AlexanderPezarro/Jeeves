@@ -138,12 +138,17 @@ export class Engine {
    * A free-text message from the phone: stored, then posted as a `message.received` event so a
    * workflow (by default chat-reply) answers it. If none fires, the user is told why.
    */
-  handleUserMessage(text: string, deviceId: number | null = null) {
-    const msg = this.db.addMessage("in", text, null, null, this.now());
-    const { decisions } = this.handleEvent(CHAT_EVENT, { text, message_id: msg.id }, deviceId);
+  handleUserMessage(text: string, deviceId: number | null = null, conversationId?: number | null) {
+    if (conversationId != null && !this.db.getConversation(conversationId)) {
+      throw Object.assign(new Error(`no conversation ${conversationId}`), { notFound: true });
+    }
+    const conversation_id = conversationId ?? this.db.createConversation({ now: this.now() }).id;
+    const msg = this.db.addMessage("in", text, null, null, this.now(), { conversation_id });
+    this.agent.maybeTitle(conversation_id);
+    const { decisions } = this.handleEvent(CHAT_EVENT, { text, message_id: msg.id, conversation_id }, deviceId);
     if (!decisions.some((d) => d.fired)) {
       const why = decisions.length ? decisions.map((d) => `${d.workflow_id}: ${d.reason}`).join("; ") : "no workflow is triggered by message.received";
-      this.background(this.agent.sendMessage(`Nothing answered that message (${why}). Add or enable a workflow triggered by message.received, such as chat-reply.`, []));
+      this.background(this.agent.sendMessage(`Nothing answered that message (${why}). Add or enable a workflow triggered by message.received, such as chat-reply.`, [], null, { conversation_id }));
     }
     return msg;
   }
@@ -165,7 +170,14 @@ export class Engine {
           const message = String(job.payload.message);
           const { plugin, item_id } = job.payload as { plugin?: unknown; item_id?: unknown };
           const about = typeof plugin === "string" && typeof item_id === "string" ? [{ plugin, item_id, title: message, steps: [] }] : [];
-          await this.agent.sendMessage(message, about);
+          const { conversation_id, workflow_run_id } = job.payload as { conversation_id?: unknown; workflow_run_id?: unknown };
+          const conv =
+            typeof conversation_id === "number" && this.db.getConversation(conversation_id)
+              ? conversation_id
+              : typeof workflow_run_id === "number" && this.db.getWorkflowRun(workflow_run_id)
+                ? this.db.conversationFor(workflow_run_id, null, this.now())
+                : undefined;
+          await this.agent.sendMessage(message, about, null, { conversation_id: conv });
         } else if (job.kind === "reminder") {
           const p = job.payload as unknown as ReminderPayload;
           const msg = await this.agent.sendMessage(p.text, p.items ?? [], null, { level: p.level, due_at: job.run_at, job_id: job.id });
@@ -246,6 +258,6 @@ export class Engine {
 
   /** Waits for all background runs; used by tests. */
   async idle() {
-    while (this.pending.size) await Promise.allSettled([...this.pending]);
+    while (this.pending.size || this.agent.pendingTitles.size) await Promise.allSettled([...this.pending, ...this.agent.pendingTitles]);
   }
 }

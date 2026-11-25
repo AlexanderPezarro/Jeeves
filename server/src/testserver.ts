@@ -89,7 +89,7 @@ async function main() {
       : reply("end_turn", []);
   };
   const notifier = new RecordingNotifier();
-  const agent = new Agent({ db, config: store, plugins, notifier, create });
+  const agent = new Agent({ db, config: store, plugins, notifier, create, titles: async () => null });
   const engine = new Engine(db, store, plugins, agent);
   engine.start();
 

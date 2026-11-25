@@ -300,7 +300,7 @@ describe("rules migration", () => {
       reply("tool_use", [toolUse("t1", "send_message", { text: "Welcome home!", items: [] })]),
       reply("end_turn", []),
     ]);
-    const agent = new Agent({ db, config: store, plugins, notifier, create: claude.create, now });
+    const agent = new Agent({ db, config: store, plugins, notifier, create: claude.create, now, titles: async () => null });
     const engine = new Engine(db, store, plugins, agent, now);
     const app = buildApp({ db, engine, pairingCode: "pair-me-please", store });
     const headers = await pair(app);

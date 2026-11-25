@@ -116,6 +116,8 @@ export class WorkflowRunner {
       },
       this.now(),
     );
+    const chatConv = ctx.event?.payload.conversation_id;
+    if (!ctx.dryRun && typeof chatConv === "number" && db.getConversation(chatConv)) db.setWorkflowRunConversation(id, chatConv);
     const tctx: TemplateContext = { event: ctx.event ? eventContext(ctx.event) : {}, steps: {} };
     return { workflowRunId: id, done: this.execute(id, workflow, tctx, "0", !!ctx.dryRun, eventId) };
   }
@@ -174,7 +176,7 @@ export class WorkflowRunner {
     const tctx: TemplateContext = { event: event ? eventContext(event) : {}, steps: db.stepOutputs(runId) };
     const { text, items } = this.renderMessage(step.message, tctx, []);
     const sent = Number(p.sent) + 1;
-    const msg = await agent.sendMessage(text, items, null, { level: step.message.level });
+    const msg = await agent.sendMessage(text, items, null, { level: step.message.level, conversation_id: db.conversationFor(runId, workflow.id, this.now()) });
     const repeat = step.message.repeat;
     let next_at: string | undefined;
     if (repeat) next_at = this.scheduleNag(runId, p.step_path, sent, repeat, p.plugin, p.item_id);
@@ -230,7 +232,9 @@ export class WorkflowRunner {
         db.finishWorkflowRun(runId, "failed", `${step.id}: ${error}`, this.now());
         console.warn(`Workflow ${workflow.id} run ${runId} failed at ${step.id}: ${error}`);
         if (workflow.notify_on_failure && !dryRun) {
-          await this.deps.agent.sendMessage(`Workflow ${workflow.id} failed at ${step.id}: ${error}`, []).catch(() => {});
+          await this.deps.agent
+            .sendMessage(`Workflow ${workflow.id} failed at ${step.id}: ${error}`, [], null, { conversation_id: db.conversationFor(runId, workflow.id, this.now()) })
+            .catch(() => {});
         }
         return { workflowRunId: runId, status: "failed", error };
       }
@@ -295,6 +299,8 @@ export class WorkflowRunner {
         rule_id: s.workflow.id,
         event_id: s.eventId ?? undefined,
         workflow_run_id: s.runId,
+        conversation_id: db.conversationForWorkflowRun(s.runId) ?? undefined,
+        exclude_message_id: typeof s.tctx.event.message_id === "number" ? s.tctx.event.message_id : undefined,
         tools,
         model,
         effort,
@@ -322,7 +328,7 @@ export class WorkflowRunner {
         done({ dry_run: true, text, items }, { input });
         return {};
       }
-      const msg = await agent.sendMessage(text, items, null, { level });
+      const msg = await agent.sendMessage(text, items, null, { level, conversation_id: db.conversationFor(s.runId, s.workflow.id, this.now()) });
       if (!until) {
         done({ message_id: msg.id, text }, { input });
         return {};

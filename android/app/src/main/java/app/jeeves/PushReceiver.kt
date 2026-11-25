@@ -69,6 +69,8 @@ class PushReceiver : PushService() {
                             id, "out", text, items, created_at = "",
                             level = obj["level"]?.jsonPrimitive?.contentOrNull,
                             due_at = obj["due_at"]?.jsonPrimitive?.contentOrNull,
+                            // A number, or a string under FCM.
+                            conversation_id = obj["conversation_id"]?.jsonPrimitive?.contentOrNull?.toLongOrNull(),
                         ))
                 } else {
                     // Truncated or unreadable: fetch the full messages from the server instead.

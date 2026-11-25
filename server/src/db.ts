@@ -133,6 +133,15 @@ CREATE TABLE IF NOT EXISTS meta (
   value TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS events_time ON events (received_at);
+
+CREATE TABLE IF NOT EXISTS conversations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT,
+  archived_at TEXT,
+  created_at TEXT NOT NULL,
+  last_message_at TEXT,
+  source_workflow_id TEXT
+);
 `;
 
 /** Columns added after the first release, applied with a guarded ALTER TABLE. */
@@ -149,6 +158,8 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["messages", "level", "TEXT"],
   ["messages", "due_at", "TEXT"],
   ["messages", "job_id", "INTEGER"],
+  ["messages", "conversation_id", "INTEGER"],
+  ["workflow_runs", "conversation_id", "INTEGER"],
 ];
 
 /** Indexes on added columns: these can't live in SCHEMA because old databases get the columns later. */
@@ -156,6 +167,8 @@ const ADDED_INDEXES = [
   // One pending reminder per plugin and key; upserts update it in place.
   `CREATE UNIQUE INDEX IF NOT EXISTS jobs_reminder_pending ON jobs (plugin, reminder_key)
      WHERE kind = 'reminder' AND done_at IS NULL AND cancelled_at IS NULL`,
+  `CREATE INDEX IF NOT EXISTS messages_conv ON messages (conversation_id, id)`,
+  `CREATE INDEX IF NOT EXISTS conversations_activity ON conversations (archived_at, last_message_at)`,
 ];
 
 export type ReminderLevel = "notify" | "loud" | "alarm";
@@ -237,6 +250,25 @@ export interface MessageRow {
   due_at: string | null;
   /** The reminder job that produced this message. */
   job_id: number | null;
+  /** The conversation this message belongs to. */
+  conversation_id: number | null;
+}
+
+export interface ConversationRow {
+  id: number;
+  title: string | null;
+  archived_at: string | null;
+  created_at: string;
+  last_message_at: string | null;
+  source_workflow_id: string | null;
+}
+
+export interface ConversationSummary extends ConversationRow {
+  preview: string | null;
+  first_line: string | null;
+  last_message_id: number | null;
+  last_out_message_id: number | null;
+  message_count: number;
 }
 
 export interface Job {
@@ -353,6 +385,23 @@ export class Db {
       if (!cols.some((c) => c.name === column)) this.sql.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
     }
     for (const ddl of ADDED_INDEXES) this.sql.exec(ddl);
+    this.backfillConversations();
+  }
+
+  /** One-time: messages from before conversations existed become one "Earlier chat". Idempotent. */
+  private backfillConversations(): void {
+    this.sql.transaction(() => {
+      const r = this.sql
+        .prepare("SELECT MIN(created_at) AS first, MAX(created_at) AS last FROM messages WHERE conversation_id IS NULL")
+        .get() as { first: string | null; last: string | null };
+      if (!r.first) return;
+      const id = Number(
+        this.sql
+          .prepare("INSERT INTO conversations (title, created_at, last_message_at) VALUES ('Earlier chat', ?, ?)")
+          .run(r.first, r.last).lastInsertRowid,
+      );
+      this.sql.prepare("UPDATE messages SET conversation_id = ? WHERE conversation_id IS NULL").run(id);
+    })();
   }
 
   // Meta: one-off markers such as "this upgrade step has run" ------------------
@@ -499,7 +548,7 @@ export class Db {
   }
 
   runsOn(localDate: string): number {
-    return (this.sql.prepare("SELECT COUNT(*) AS n FROM runs WHERE local_date = ?").get(localDate) as { n: number }).n;
+    return (this.sql.prepare("SELECT COUNT(*) AS n FROM runs WHERE local_date = ? AND kind != 'title'").get(localDate) as { n: number }).n;
   }
 
   recentRuns(limit = 20): unknown[] {
@@ -850,16 +899,22 @@ export class Db {
     items: PlanItem[] | null = null,
     runId: number | null = null,
     now = new Date(),
-    extra: { level?: ReminderLevel | null; due_at?: string | null; job_id?: number | null } = {},
+    extra: { level?: ReminderLevel | null; due_at?: string | null; job_id?: number | null; conversation_id?: number | null } = {},
   ): MessageRow {
     const created_at = now.toISOString();
     const level = extra.level ?? null;
     const due_at = extra.due_at ?? null;
     const job_id = extra.job_id ?? null;
-    const info = this.sql
-      .prepare("INSERT INTO messages (direction, text, items, run_id, created_at, level, due_at, job_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(direction, text, items ? JSON.stringify(items) : null, runId, created_at, level, due_at, job_id);
-    return { id: Number(info.lastInsertRowid), direction, text, items, run_id: runId, created_at, level, due_at, job_id };
+    const conversation_id = extra.conversation_id ?? null;
+    return this.sql.transaction(() => {
+      const info = this.sql
+        .prepare("INSERT INTO messages (direction, text, items, run_id, created_at, level, due_at, job_id, conversation_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(direction, text, items ? JSON.stringify(items) : null, runId, created_at, level, due_at, job_id, conversation_id);
+      if (conversation_id !== null) {
+        this.sql.prepare("UPDATE conversations SET last_message_at = ?, archived_at = NULL WHERE id = ?").run(created_at, conversation_id);
+      }
+      return { id: Number(info.lastInsertRowid), direction, text, items, run_id: runId, created_at, level, due_at, job_id, conversation_id } as MessageRow;
+    })();
   }
 
   messagesAfter(afterId: number, limit = 100): MessageRow[] {
@@ -869,12 +924,76 @@ export class Db {
     return rows.map((r) => ({ ...r, items: r.items ? (JSON.parse(r.items) as PlanItem[]) : null }));
   }
 
-  /** The last few messages, oldest first, for conversational context in reply runs. */
-  recentMessages(limit = 10): MessageRow[] {
-    const rows = this.sql.prepare("SELECT * FROM messages ORDER BY id DESC LIMIT ?").all(limit) as (Omit<MessageRow, "items"> & {
-      items: string | null;
-    })[];
-    return rows.reverse().map((r) => ({ ...r, items: r.items ? (JSON.parse(r.items) as PlanItem[]) : null }));
+  // Conversations -------------------------------------------------------------
+
+  createConversation(o: { source_workflow_id?: string | null; title?: string | null; now?: Date } = {}): ConversationRow {
+    const created_at = (o.now ?? new Date()).toISOString();
+    const info = this.sql
+      .prepare("INSERT INTO conversations (title, created_at, source_workflow_id) VALUES (?, ?, ?)")
+      .run(o.title ?? null, created_at, o.source_workflow_id ?? null);
+    return this.getConversation(Number(info.lastInsertRowid))!;
+  }
+
+  getConversation(id: number): ConversationRow | undefined {
+    return this.sql.prepare("SELECT * FROM conversations WHERE id = ?").get(id) as ConversationRow | undefined;
+  }
+
+  /** Conversations with at least one message, newest activity first. */
+  listConversations(o: { archived: boolean }): ConversationSummary[] {
+    return this.sql
+      .prepare(
+        `SELECT c.*,
+           (SELECT text FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS preview,
+           (SELECT CASE WHEN instr(text, char(10)) > 0 THEN substr(text, 1, instr(text, char(10)) - 1) ELSE text END
+              FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id ASC LIMIT 1) AS first_line,
+           (SELECT MAX(id) FROM messages m WHERE m.conversation_id = c.id) AS last_message_id,
+           (SELECT MAX(id) FROM messages m WHERE m.conversation_id = c.id AND m.direction = 'out') AS last_out_message_id,
+           (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS message_count
+         FROM conversations c
+         WHERE c.last_message_at IS NOT NULL AND c.archived_at IS ${o.archived ? "NOT NULL" : "NULL"}
+         ORDER BY COALESCE(c.last_message_at, c.created_at) DESC, c.id DESC`,
+      )
+      .all() as ConversationSummary[];
+  }
+
+  /** Updates a title and/or the archived flag; returns the row, or undefined for an unknown id. */
+  updateConversation(id: number, p: { title?: string; archived?: boolean }, now = new Date()): ConversationRow | undefined {
+    if (!this.getConversation(id)) return undefined;
+    if (p.title !== undefined) this.sql.prepare("UPDATE conversations SET title = ? WHERE id = ?").run(p.title, id);
+    if (p.archived !== undefined) this.sql.prepare("UPDATE conversations SET archived_at = ? WHERE id = ?").run(p.archived ? now.toISOString() : null, id);
+    return this.getConversation(id);
+  }
+
+  /** Sets the title only if there is none yet, so a user's rename wins. */
+  setTitleIfUnset(id: number, title: string): boolean {
+    return this.sql.prepare("UPDATE conversations SET title = ? WHERE id = ? AND title IS NULL").run(title, id).changes > 0;
+  }
+
+  /** One conversation's messages, oldest first. */
+  conversationMessages(id: number, o: { excludeId?: number; afterId?: number; limit?: number } = {}): MessageRow[] {
+    const rows = this.sql
+      .prepare("SELECT * FROM messages WHERE conversation_id = ? AND id > ? AND id != ? ORDER BY id LIMIT ?")
+      .all(id, o.afterId ?? 0, o.excludeId ?? -1, o.limit ?? -1) as (Omit<MessageRow, "items"> & { items: string | null })[];
+    return rows.map((r) => ({ ...r, items: r.items ? (JSON.parse(r.items) as PlanItem[]) : null }));
+  }
+
+  conversationForWorkflowRun(runId: number): number | null {
+    const r = this.sql.prepare("SELECT conversation_id FROM workflow_runs WHERE id = ?").get(runId) as { conversation_id: number | null } | undefined;
+    return r?.conversation_id ?? null;
+  }
+
+  setWorkflowRunConversation(runId: number, convId: number): void {
+    this.sql.prepare("UPDATE workflow_runs SET conversation_id = ? WHERE id = ?").run(convId, runId);
+  }
+
+  /** The conversation a workflow run's messages go to: created on first use and remembered on the run. */
+  conversationFor(runId: number, workflowId: string | null = null, now = new Date()): number {
+    const existing = this.conversationForWorkflowRun(runId);
+    if (existing !== null) return existing;
+    const source = workflowId ?? (this.sql.prepare("SELECT workflow_id FROM workflow_runs WHERE id = ?").get(runId) as { workflow_id: string } | undefined)?.workflow_id ?? null;
+    const conv = this.createConversation({ source_workflow_id: source, now });
+    this.setWorkflowRunConversation(runId, conv.id);
+    return conv.id;
   }
 
   messagesForRun(runId: number): MessageRow[] {
