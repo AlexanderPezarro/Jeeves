@@ -31,7 +31,7 @@ export interface AgentDeps {
 }
 
 /** Cheap model for conversation titles. */
-export const TITLE_MODEL = "claude-haiku-4-5";
+export const TITLE_MODEL = "claude-haiku-5-5";
 const TITLE_SYSTEM = "You write short titles for chat conversations. Reply with the title only: 3 to 6 words, no quotes, no trailing punctuation.";
 
 export function cleanTitle(raw: string): string | null {
