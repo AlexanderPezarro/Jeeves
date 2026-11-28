@@ -2,6 +2,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { Agent, anthropicCreate } from "./agent.js";
 import { claudeCliRun } from "./cli.js";
+import { BUILTIN_EVENT_INFO } from "./api.js";
 import { buildApp } from "./app.js";
 import { ConfigStore } from "./configstore.js";
 import { Db } from "./db.js";
@@ -78,6 +79,8 @@ async function main() {
     plugins,
     notifier,
     ...(process.env.JEEVES_CLAUDE_BACKEND === "api" ? { create: anthropicCreate() } : { cli: claudeCliRun }),
+    workflows: store,
+    eventInfo: () => [...BUILTIN_EVENT_INFO, ...plugins.manifestEventInfo()],
   });
   const engine = new Engine(db, store, plugins, agent);
   engine.start();

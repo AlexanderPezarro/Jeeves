@@ -8,6 +8,7 @@ import { join } from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
 import { stringify } from "yaml";
 import { Agent, type CreateMessage } from "./agent.js";
+import { BUILTIN_EVENT_INFO } from "./api.js";
 import { buildApp } from "./app.js";
 import { staticConfig, type ConfigSource, type WorkflowInput } from "./config.js";
 import { ConfigStore } from "./configstore.js";
@@ -37,7 +38,7 @@ export const CHAT_REPLY: WorkflowInput = {
   id: "chat-reply",
   cooldown: 0,
   triggers: [{ event: "message.received" }],
-  steps: [{ id: "reply", claude: { prompt: 'I wrote: "{{event.text}}". Reply once.', history: true } }],
+  steps: [{ id: "reply", claude: { prompt: 'I wrote: "{{event.text}}". Reply once.', history: true, workflows: true } }],
 };
 
 const READ_ONLY = new Set(["list_due_tasks", "get_chore", "get_task"]);
@@ -165,7 +166,16 @@ export function setup(opts: SetupOptions = {}) {
   const plugins = opts.plugins ?? fake;
   const notifier = new RecordingNotifier();
   const claude = scriptedClaude(opts.script ?? []);
-  const agent = new Agent({ db, config, plugins, notifier, create: claude.create, now, titles: opts.titles ?? (async () => null) });
+  const agent = new Agent({
+    db,
+    config,
+    plugins,
+    notifier,
+    create: claude.create,
+    now,
+    titles: opts.titles ?? (async () => null),
+    ...(store ? { workflows: store, eventInfo: () => BUILTIN_EVENT_INFO } : {}),
+  });
   const engine = new Engine(db, config, plugins, agent, now);
   const app = buildApp({ db, engine, pairingCode: "pair-me-please", store, config, plugins, now });
   return { clock, db, plugins: fake, notifier, claude, agent, engine, app, store, config };

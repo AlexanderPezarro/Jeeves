@@ -181,7 +181,7 @@ const planItemSchema = z.object({
 
 export type Step =
   | { id: string; call: { plugin: string; tool: string; args?: Record<string, unknown> } }
-  | { id: string; claude: { prompt: string; tools?: string[]; model?: string; effort?: Effort; history?: boolean } }
+  | { id: string; claude: { prompt: string; tools?: string[]; model?: string; effort?: Effort; history?: boolean; workflows?: boolean } }
   | {
       id: string;
       message: {
@@ -223,7 +223,10 @@ const pluginName = z.string().regex(/^[a-z0-9_]+$/, "a plugin name");
 const toolName = z.string().regex(/^[A-Za-z0-9_-]+$/, "a tool name");
 const claudeTool = z
   .string()
-  .regex(/^([a-z0-9_]+__[A-Za-z0-9_-]+|send_message|schedule_followup)$/, '"<plugin>__<tool>", "send_message" or "schedule_followup"');
+  .regex(
+    /^([a-z0-9_]+__[A-Za-z0-9_-]+|send_message|schedule_followup|set_reminder|list_reminders|cancel_reminder|list_workflows|get_workflow|save_workflow)$/,
+    '"<plugin>__<tool>" or a built-in tool (send_message, schedule_followup, set_reminder, list_reminders, cancel_reminder, list_workflows, get_workflow, save_workflow)',
+  );
 
 export const stepSchema: z.ZodType<Step> = z.lazy(() =>
   z.union([
@@ -241,6 +244,8 @@ export const stepSchema: z.ZodType<Step> = z.lazy(() =>
             effort: effortSchema.optional(),
             /** Show Claude the recent chat (last 8 messages). */
             history: z.boolean().optional(),
+            /** Offer the workflow tools (list_workflows, get_workflow, save_workflow), so this step can read and write workflows. */
+            workflows: z.boolean().optional(),
           })
           .strict(),
       })

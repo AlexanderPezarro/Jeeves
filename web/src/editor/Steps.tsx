@@ -385,7 +385,7 @@ function ClaudeStep({ step, onChange, path }: { step: Extract<Step, { claude: un
     onChange({ ...step, claude: list === undefined ? rest : { ...rest, tools: list } });
   };
   /** Sets an optional field, dropping it when cleared so the file stays minimal. */
-  const setOpt = <K extends "model" | "effort" | "history">(key: K, value: (typeof c)[K] | undefined) => {
+  const setOpt = <K extends "model" | "effort" | "history" | "workflows">(key: K, value: (typeof c)[K] | undefined) => {
     const next = { ...c } as Record<string, unknown>;
     if (value === undefined || value === "" || value === false) delete next[key];
     else next[key] = value;
@@ -419,6 +419,10 @@ function ClaudeStep({ step, onChange, path }: { step: Extract<Step, { claude: un
       <label className="check">
         <input type="checkbox" checked={c.history ?? false} onChange={(e) => setOpt("history", e.target.checked)} />
         Include the recent chat (last 8 messages)
+      </label>
+      <label className="check">
+        <input type="checkbox" checked={c.workflows ?? false} onChange={(e) => setOpt("workflows", e.target.checked)} />
+        Can read and create workflows (for the chat)
       </label>
       <div className="field">
         <span className="field-label">Tools Claude may use</span>

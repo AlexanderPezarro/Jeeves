@@ -33,8 +33,11 @@ Android app ──events──▶ server (workflows, scheduler, Claude) ──MC
    deciding whether a workflow fires.
 3. **Steps.** A firing workflow runs its steps in order: call a plugin tool, start a Claude run,
    send a message, wait (minutes, or until a time of day), branch with `if`, or `stop`. A Claude
-   step can call the plugins' tools (`todo__list_due_tasks`, `todo__complete_task`, …) plus two
-   built-ins: `send_message` and `schedule_followup`. Only messages reach your phone.
+   step can call the plugins' tools (`todo__list_due_tasks`, `todo__complete_task`, …) plus the
+   built-ins: `send_message`, `schedule_followup` (a nudge within 24 hours) and `set_reminder` /
+   `list_reminders` / `cancel_reminder` (a one-off reminder at any future date and time, e.g. "remind
+   me to book a haircut on Friday"; it shows under Coming up and can be snoozed). Only messages reach
+   your phone.
 4. **Completion.** Tap the plugin's buttons (the to-do plugin's Start/Done/Skip) on a notification or in the Today list, or reply in the chat (a `message.received` event, see below)
    ("dishes done, laundry is in"). Timing is the workflow's job, not the plugin's: see
    [`config.example/workflows/laundry.yaml`](config.example/workflows/laundry.yaml) for "wait, then
@@ -68,9 +71,10 @@ steps:
     message: { text: "{{event.name}} is done" }
 ```
 
-Step types: `call: {plugin, tool, args}`, `claude: {prompt, tools?, model?, effort?, history?}`
+Step types: `call: {plugin, tool, args}`, `claude: {prompt, tools?, model?, effort?, history?, workflows?}`
 (`tools` is an allowlist; `model`/`effort` override the globals for that step; `history: true`
-adds every earlier message of the current conversation),
+adds every earlier message of the current conversation; `workflows: true` also offers
+`list_workflows`, `get_workflow` and `save_workflow`, so the chat can build workflows for you),
 `message: {text, items?, level?, repeat?: {every_minutes, max?}, until?: {event, conditions?}}`
 (`level` is notify, loud or alarm; with `until` the run pauses after sending until that event
 arrives, and `repeat` re-sends every N minutes meanwhile, ending the run as `stopped` one interval
